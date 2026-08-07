@@ -80,6 +80,17 @@
     }
     .check-row input { accent-color: #c59c5d; width: 14px; height: 14px; }
     .hint-text { opacity: 0.4; font-size: 10.5px; line-height: 1.4; margin: 4px 0 8px; }
+    .choice-row { margin-bottom: 10px; }
+    .choice-row > label { display: block; opacity: 0.8; font-size: 12px; margin-bottom: 6px; }
+    .choice-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+    .choice-btns button {
+      background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14);
+      color: #ebe4d6; border-radius: 6px; padding: 5px 10px; font-size: 11px; cursor: pointer;
+    }
+    .choice-btns button:hover { background: rgba(255,255,255,0.12); }
+    .choice-btns button.active {
+      background: rgba(197,156,93,0.35); border-color: #c59c5d; color: #fff;
+    }
     #toast {
       position: fixed; bottom: 1.25rem; left: 50%; transform: translateX(-50%);
       background: rgba(30,28,24,0.95); color: #ebe4d6; padding: 8px 14px;
@@ -144,40 +155,47 @@ const DEFAULTS = {
   showBathroom: true,
   showBathDoor: true,
 
-  // Acoustic panels 24" × 48"
+  // Acoustic panels — standard sizes only (ft): width 12|24, height 24|48
   showWallPanels: true,
-  panelWidth: 2,          // 24"
-  panelHeight: 4,         // 48"
+  panelWidth: 2,          // 24"  (12 or 24)
+  panelHeight: 4,         // 48"  (24 or 48)
   panelThickness: 0.18,
-  panelGap: 0.35,         // gap between panels
-  panelBottom: 1.5,       // bottom edge height from floor
-  panelMargin: 0.75,      // inset from wall ends / corners
-  // one horizontal panel in the gable triangle above the vertical row (non-window walls)
+  panelGap: 0.35,
+  panelBottom: 1.5,
+  panelMargin: 0.75,
   showHorizontalGablePanels: true,
 
-  // Bass traps 12" × 48" diagonal in corners
+  // Bass traps — width 12|24, height 48 each; stack 2 for floor→ceiling
   showBassTraps: true,
-  // front-right corner (window wall + entry-door wall) — door is there
-  showBassTrapDoorCorner: false,
-  // stack two 48" traps floor→ceiling
+  showBassTrapDoorCorner: false,   // entry-door corner — off by default
+  showBassTrapBathCorner: true,    // exterior corner of bathroom into room
   twoBassTrapsPerCorner: true,
-  trapWidth: 1,           // 12"
-  trapHeight: 4,          // 48"
+  trapWidth: 1,           // 12" or 24" (1 or 2 ft)
+  trapHeight: 4,          // 48" fixed per unit
   trapThickness: 0.55,
   trapBottom: 0.0,
 
-  // Ceiling clouds
+  // Ceiling clouds (hanging)
   showClouds: true,
-  cloudWidth: 4,          // along Z (depth)
-  cloudDepth: 2,          // along X (across ridge)
+  cloudWidth: 4,
+  cloudDepth: 2,
   cloudThickness: 0.2,
-  cloudHang: 1.4,         // drop below ridge underside
-  cloudGap: 0.5,          // spacing between clouds along Z (0 = edge-to-edge pack)
-  cloudMargin: 0.5,       // inset from front/back walls when packing
+  cloudHang: 1.4,
+  cloudGap: 0.5,
+  cloudMargin: 0.5,
   cloudWireLen: 1.2,
 
-  bulb1X: -3.2, bulb1Z: -1.2,
-  bulb2X: 3.5, bulb2Z: 2.8,
+  // Vault ceiling panels — 4 per slope (2×2), landscape (long edge along room / parallel to ridge)
+  showVaultPanels: true,
+  vaultPanelAlong: 2,     // 24" along slope (short)
+  vaultPanelAcross: 4,    // 48" along room depth (long) — landscape
+  vaultPanelThickness: 0.15,
+  vaultPanelGap: 0.35,
+  vaultPanelMargin: 0.75,
+
+  // bare bulbs hang on ridge centerline (x = 0)
+  bulb1X: 0, bulb1Z: -3.5,
+  bulb2X: 0, bulb2Z: 3.5,
   bulbIntensity: 32,
   windowLightIntensity: 5.5,
   ambientIntensity: 0.28,
@@ -189,6 +207,7 @@ const DEFAULTS = {
   colorFrame: '#faf8f4',
   colorWallPanel: '#f1e6ca',   // default match walls
   colorCeilingPanel: '#e8d9b8',
+  colorVaultPanel: '#f1e6ca',  // Matchstick — on vaulted ceiling
   colorBassTrap: '#e5d9c0',
 
   eyeHeight: 5.35,
@@ -197,7 +216,7 @@ const DEFAULTS = {
 };
 
 const P = { ...DEFAULTS };
-const STORAGE_KEY = 'music-studio-params-v8';
+const STORAGE_KEY = 'music-studio-params-v10';
 const REPO_PARAMS_FILE = 'studio-params.json';
 
 function applyParamObject(obj) {
@@ -285,71 +304,126 @@ let colliders = [];
 let bulbLights = [];
 let mats = {};
 let fabricTextures = null; // cached generative maps
+let exteriorTex = null;    // garden/house photo outside windows
+
+function ensureExteriorTexture() {
+  if (exteriorTex) return exteriorTex;
+  // cache-bust so a replaced exterior.jpg always reloads
+  exteriorTex = new THREE.TextureLoader().load(
+    `exterior.jpg?v=${Date.now()}`,
+    () => requestRender(),
+    undefined,
+    () => console.warn('Could not load exterior.jpg')
+  );
+  exteriorTex.colorSpace = THREE.SRGBColorSpace;
+  exteriorTex.anisotropy = 8;
+  return exteriorTex;
+}
 
 function hex(c) { return new THREE.Color(c); }
 
-// ── generative fabric maps (albedo micro-variation + normal + roughness) ──
-function makeFabricTextures(size = 512) {
+// ── fabric maps sized for a 24"×48" panel (aspect 1:2), fully seamless ──
+// Texture U = 24", V = 48". Map once onto a 2'×4' face with repeat (1,1).
+function makeFabricTextures() {
   if (fabricTextures) return fabricTextures;
 
-  const hCanvas = document.createElement('canvas');
-  hCanvas.width = hCanvas.height = size;
-  const hctx = hCanvas.getContext('2d');
-  const hImg = hctx.createImageData(size, size);
-  const H = new Float32Array(size * size);
+  // 256×512 ≈ 24×48 aspect (1:2)
+  const W = 256;
+  const Hgt = 512;
+  const H = new Float32Array(W * Hgt);
 
-  // multi-frequency weave + fibre noise
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const u = x / size, v = y / size;
-      // warp / weft
-      const warp = Math.sin(u * Math.PI * 64) * 0.5 + 0.5;
-      const weft = Math.sin(v * Math.PI * 64) * 0.5 + 0.5;
-      const basket = Math.abs(warp - 0.5) * Math.abs(weft - 0.5) * 4;
-      // fibre scale
-      const f1 = Math.sin((u * 180 + v * 20) * Math.PI) * 0.5 + 0.5;
-      const f2 = Math.sin((v * 160 - u * 15) * Math.PI) * 0.5 + 0.5;
-      // low-freq soft folds
-      const fold = Math.sin(u * 6.2 + v * 3.1) * 0.08 + Math.sin(u * 2.7 - v * 4.4) * 0.06;
-      // hash noise
-      const n = ((Math.sin(x * 12.9898 + y * 78.233) * 43758.5453) % 1 + 1) % 1;
-      const n2 = ((Math.sin(x * 47.11 + y * 19.77) * 23421.631) % 1 + 1) % 1;
-      let h = 0.45
-        + basket * 0.22
-        + f1 * 0.08 + f2 * 0.08
-        + fold
-        + (n - 0.5) * 0.12
-        + (n2 - 0.5) * 0.05;
+  // tileable value noise on integer grid
+  function hash2(ix, iy) {
+    const n = Math.sin(ix * 127.1 + iy * 311.7) * 43758.5453;
+    return n - Math.floor(n);
+  }
+  function vnoise(px, py, cellsX, cellsY) {
+    // px,py in [0,1) over full texture; cells = periods
+    const x = px * cellsX;
+    const y = py * cellsY;
+    const x0 = Math.floor(x);
+    const y0 = Math.floor(y);
+    const fx = x - x0;
+    const fy = y - y0;
+    const x1 = (x0 + 1) % cellsX;
+    const y1 = (y0 + 1) % cellsY;
+    const xa = ((x0 % cellsX) + cellsX) % cellsX;
+    const ya = ((y0 % cellsY) + cellsY) % cellsY;
+    const sx = fx * fx * (3 - 2 * fx);
+    const sy = fy * fy * (3 - 2 * fy);
+    const a = hash2(xa, ya);
+    const b = hash2(x1, ya);
+    const c = hash2(xa, y1);
+    const d = hash2(x1, y1);
+    return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+  }
+
+  for (let y = 0; y < Hgt; y++) {
+    for (let x = 0; x < W; x++) {
+      const u = x / W;
+      const v = y / Hgt;
+      // integer-period warp/weft (seamless)
+      const warp = Math.sin(u * Math.PI * 2 * 48); // 48 cycles across 24"
+      const weft = Math.sin(v * Math.PI * 2 * 96); // denser along 48"
+      const basket = Math.abs(warp) * Math.abs(weft);
+      // tileable fibre noise
+      const n1 = vnoise(u, v, 32, 64);
+      const n2 = vnoise(u, v, 64, 128);
+      const n3 = vnoise(u, v, 16, 32);
+      let h = 0.5
+        + basket * 0.18
+        + (n1 - 0.5) * 0.22
+        + (n2 - 0.5) * 0.12
+        + (n3 - 0.5) * 0.08;
       h = Math.min(1, Math.max(0, h));
-      H[y * size + x] = h;
-      const g = (h * 255) | 0;
-      const i = (y * size + x) * 4;
-      hImg.data[i] = g;
-      hImg.data[i + 1] = g;
-      hImg.data[i + 2] = g;
-      hImg.data[i + 3] = 255;
+      H[y * W + x] = h;
     }
   }
-  hctx.putImageData(hImg, 0, 0);
 
-  // normal from height
+  function fillCanvas(fromHeight, mapFn) {
+    const c = document.createElement('canvas');
+    c.width = W;
+    c.height = Hgt;
+    const ctx = c.getContext('2d');
+    const img = ctx.createImageData(W, Hgt);
+    for (let y = 0; y < Hgt; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        const rgb = mapFn(fromHeight[y * W + x], x, y);
+        img.data[i] = rgb[0];
+        img.data[i + 1] = rgb[1];
+        img.data[i + 2] = rgb[2];
+        img.data[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    return c;
+  }
+
+  const hCanvas = fillCanvas(H, (h) => {
+    const g = (h * 255) | 0;
+    return [g, g, g];
+  });
+
+  // normals with wrap
+  const strength = 2.8;
   const nCanvas = document.createElement('canvas');
-  nCanvas.width = nCanvas.height = size;
+  nCanvas.width = W;
+  nCanvas.height = Hgt;
   const nctx = nCanvas.getContext('2d');
-  const nImg = nctx.createImageData(size, size);
-  const strength = 3.5;
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const xl = H[y * size + ((x - 1 + size) % size)];
-      const xr = H[y * size + ((x + 1) % size)];
-      const yd = H[((y - 1 + size) % size) * size + x];
-      const yu = H[((y + 1) % size) * size + x];
+  const nImg = nctx.createImageData(W, Hgt);
+  for (let y = 0; y < Hgt; y++) {
+    for (let x = 0; x < W; x++) {
+      const xl = H[y * W + ((x - 1 + W) % W)];
+      const xr = H[y * W + ((x + 1) % W)];
+      const yd = H[((y - 1 + Hgt) % Hgt) * W + x];
+      const yu = H[((y + 1) % Hgt) * W + x];
       let nx = (xl - xr) * strength;
       let ny = (yd - yu) * strength;
       let nz = 1.0;
       const len = Math.hypot(nx, ny, nz) || 1;
       nx /= len; ny /= len; nz /= len;
-      const i = (y * size + x) * 4;
+      const i = (y * W + x) * 4;
       nImg.data[i] = ((nx * 0.5 + 0.5) * 255) | 0;
       nImg.data[i + 1] = ((ny * 0.5 + 0.5) * 255) | 0;
       nImg.data[i + 2] = ((nz * 0.5 + 0.5) * 255) | 0;
@@ -358,78 +432,54 @@ function makeFabricTextures(size = 512) {
   }
   nctx.putImageData(nImg, 0, 0);
 
-  // subtle albedo weave (grayscale multiply)
-  const aCanvas = document.createElement('canvas');
-  aCanvas.width = aCanvas.height = size;
-  const actx = aCanvas.getContext('2d');
-  const aImg = actx.createImageData(size, size);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const h = H[y * size + x];
-      const v = (0.82 + h * 0.22) * 255;
-      const i = (y * size + x) * 4;
-      aImg.data[i] = aImg.data[i + 1] = aImg.data[i + 2] = v;
-      aImg.data[i + 3] = 255;
-    }
-  }
-  actx.putImageData(aImg, 0, 0);
+  const aCanvas = fillCanvas(H, (h) => {
+    const v = (0.84 + h * 0.18) * 255;
+    return [v, v, v];
+  });
+  const rCanvas = fillCanvas(H, (h) => {
+    const v = ((0.78 + (1 - h) * 0.18) * 255) | 0;
+    return [v, v, v];
+  });
 
-  // roughness: slightly higher in weave valleys
-  const rCanvas = document.createElement('canvas');
-  rCanvas.width = rCanvas.height = size;
-  const rctx = rCanvas.getContext('2d');
-  const rImg = rctx.createImageData(size, size);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const h = H[y * size + x];
-      const v = ((0.75 + (1 - h) * 0.2) * 255) | 0;
-      const i = (y * size + x) * 4;
-      rImg.data[i] = rImg.data[i + 1] = rImg.data[i + 2] = v;
-      rImg.data[i + 3] = 255;
-    }
-  }
-  rctx.putImageData(rImg, 0, 0);
-
-  const mk = (c) => {
+  function mk(c, srgb = false) {
     const t = new THREE.CanvasTexture(c);
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
-    t.colorSpace = THREE.SRGBColorSpace;
     t.anisotropy = 8;
+    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
     return t;
+  }
+
+  fabricTextures = {
+    map: mk(aCanvas, true),
+    normalMap: mk(nCanvas),
+    roughnessMap: mk(rCanvas),
+    bumpMap: mk(hCanvas),
   };
-  const normalMap = new THREE.CanvasTexture(nCanvas);
-  normalMap.wrapS = normalMap.wrapT = THREE.RepeatWrapping;
-  normalMap.anisotropy = 8;
-
-  const roughnessMap = new THREE.CanvasTexture(rCanvas);
-  roughnessMap.wrapS = roughnessMap.wrapT = THREE.RepeatWrapping;
-
-  const map = mk(aCanvas);
-  // height/bump style — use as bumpMap too
-  const bumpMap = new THREE.CanvasTexture(hCanvas);
-  bumpMap.wrapS = bumpMap.wrapT = THREE.RepeatWrapping;
-
-  fabricTextures = { map, normalMap, roughnessMap, bumpMap };
   return fabricTextures;
 }
 
-function fabricMat(colorHex, repeat = 2) {
+/**
+ * Fabric material. Texture covers a 24"×48" (2'×4') panel at repeat (1,1).
+ * Pass physical size in feet so weave density stays consistent.
+ */
+function fabricMat(colorHex, sizeWft = 2, sizeHft = 4) {
   const tex = makeFabricTextures();
+  const uRep = sizeWft / 2; // 24" base
+  const vRep = sizeHft / 4; // 48" base
   const mat = new THREE.MeshStandardMaterial({
     color: hex(colorHex),
     map: tex.map.clone(),
     normalMap: tex.normalMap.clone(),
     roughnessMap: tex.roughnessMap.clone(),
     bumpMap: tex.bumpMap.clone(),
-    bumpScale: 0.012,
-    normalScale: new THREE.Vector2(0.55, 0.55),
+    bumpScale: 0.018,
+    normalScale: new THREE.Vector2(0.7, 0.7),
     roughness: 0.92,
     metalness: 0.0,
   });
-  // clone textures so each mat can have own repeat without sharing state issues
   for (const t of [mat.map, mat.normalMap, mat.roughnessMap, mat.bumpMap]) {
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
-    t.repeat.set(repeat, repeat);
+    t.repeat.set(uRep, vRep);
     t.needsUpdate = true;
   }
   mat.map.colorSpace = THREE.SRGBColorSpace;
@@ -449,8 +499,8 @@ function makeMaterials() {
     }),
     trim: new THREE.MeshStandardMaterial({ color: 0xf5f2eb, roughness: 0.55, metalness: 0.04 }),
     glass: new THREE.MeshStandardMaterial({
-      color: 0x9ec0d4, metalness: 0.15, roughness: 0.08,
-      transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false
+      color: 0xdce8f0, metalness: 0.05, roughness: 0.05,
+      transparent: true, opacity: 0.1, side: THREE.DoubleSide, depthWrite: false
     }),
     door: new THREE.MeshStandardMaterial({
       color: 0xece9e2, roughness: 0.62,
@@ -459,10 +509,15 @@ function makeMaterials() {
     metal: new THREE.MeshStandardMaterial({ color: 0xb8b0a4, metalness: 0.75, roughness: 0.28 }),
     wire: new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.7, roughness: 0.4 }),
     roof: new THREE.MeshStandardMaterial({ color: 0x7a6540, roughness: 0.92, side: THREE.DoubleSide }),
-    night: new THREE.MeshBasicMaterial({ color: 0x080a10 }),
-    wallPanel: fabricMat(P.colorWallPanel, 1.6),
-    ceilPanel: fabricMat(P.colorCeilingPanel, 1.8),
-    bassTrap: fabricMat(P.colorBassTrap, 1.4),
+    // UV scaled to physical size so a 24×48 face gets exactly one texture tile
+    wallPanel: fabricMat(P.colorWallPanel, panelW(), panelH()),
+    ceilPanel: fabricMat(P.colorCeilingPanel, P.cloudDepth, P.cloudWidth),
+    vaultPanel: fabricMat(
+      P.colorVaultPanel,
+      snapPanelSize(P.vaultPanelAlong, [1, 2]),
+      snapPanelSize(P.vaultPanelAcross, [2, 4])
+    ),
+    bassTrap: fabricMat(P.colorBassTrap, trapW(), 4),
   };
 }
 
@@ -617,6 +672,47 @@ function addRoofSkin(left, halfW, halfD) {
   world.add(m);
 }
 
+/** Photo backdrop outside the window wall so both casements look onto the yard */
+function placeExteriorBackdrop(zFront, wins) {
+  const tex = ensureExteriorTexture();
+  // size plane to cover windows while keeping a landscape photo aspect (~1.85)
+  const winSpan = Math.max(wins.rightEdge - wins.leftEdge, P.windowWidth * 2) * 1.35;
+  const aspect = 1346 / 724; // matches exterior.jpg
+  let span = Math.max(winSpan, 12);
+  let height = span / aspect;
+  // ensure tall enough to cover window + a bit of sky/ground
+  const minH = P.windowHeight * 2.2;
+  if (height < minH) {
+    height = minH;
+    span = height * aspect;
+  }
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex,
+    side: THREE.FrontSide,
+    toneMapped: false,
+  });
+  // farther out for stronger parallax when walking past the windows
+  const depth = 8;
+  // scale up so the view still fills the glass from farther away
+  span *= 1.65;
+  height *= 1.65;
+
+  const plane = new THREE.Mesh(new THREE.PlaneGeometry(span, height), mat);
+  const midX = (wins.leftEdge + wins.rightEdge) / 2;
+  // bias slightly down so deck/path sits naturally in the lower half of the view
+  const midY = P.windowSill + P.windowHeight * 0.42;
+  plane.position.set(midX, midY, zFront - depth);
+  world.add(plane);
+
+  // soft overcast fill beyond photo edges
+  const sky = new THREE.Mesh(
+    new THREE.PlaneGeometry(span * 2.2, height * 1.8),
+    new THREE.MeshBasicMaterial({ color: 0xa8b0b4, side: THREE.FrontSide })
+  );
+  sky.position.set(midX, midY, zFront - depth - 1.5);
+  world.add(sky);
+}
+
 function casementWindow(cx, zFront) {
   const g = new THREE.Group();
   // thicker outer frame + thicker vertical center only (no horizontal mid-bar, no sill)
@@ -749,8 +845,9 @@ function bareBulb(x, z, halfW) {
   mesh(new THREE.SphereGeometry(0.4, 12, 12),
     new THREE.MeshBasicMaterial({ color: 0xffe0a8, transparent: true, opacity: 0.12, depthWrite: false }),
     0, -0.3, 0, g).castShadow = false;
-  const clampedX = THREE.MathUtils.clamp(x, -halfW + 0.5, halfW - 0.5);
-  g.position.set(clampedX, roofY(clampedX, halfW) - 0.08, z);
+  // always on ridge centerline (x = 0)
+  const bx = 0;
+  g.position.set(bx, roofY(bx, halfW) - 0.08, z);
   world.add(g);
   bulbLights.push(light);
 }
@@ -789,10 +886,24 @@ function freeIntervals(a0, a1, blocked) {
 // Must match placeBassTraps: diagonal trap center offset from each corner
 const BASS_TRAP_CORNER_INSET = 0.55;
 
+/** Snap feet value to nearest allowed standard size */
+function snapPanelSize(ft, allowed) {
+  let best = allowed[0];
+  let bestD = Math.abs(ft - best);
+  for (const a of allowed) {
+    const d = Math.abs(ft - a);
+    if (d < bestD) { best = a; bestD = d; }
+  }
+  return best;
+}
+
+function panelW() { return snapPanelSize(P.panelWidth, [1, 2]); }   // 12" | 24"
+function panelH() { return snapPanelSize(P.panelHeight, [2, 4]); }  // 24" | 48"
+function trapW() { return P.trapWidth >= 1.5 ? 2 : 1; }             // 12" | 24"
+
 /** Half-extent of a 45°-rotated trap box along a wall axis (AABB) */
 function bassTrapHalfAlongWall() {
-  // box (trapWidth × trapThickness) rotated 45° → AABB half-size on X or Z
-  return 0.5 * (P.trapWidth + P.trapThickness) * Math.SQRT1_2;
+  return 0.5 * (trapW() + P.trapThickness) * Math.SQRT1_2;
 }
 
 /**
@@ -812,7 +923,7 @@ function cornerPanelClearance(corner) {
  *  marginA0 / marginA1: clearance at span start / end (defaults to panelMargin).
  */
 function placePanelsOnSpan(a0, a1, blocked, makePanel, marginA0, marginA1) {
-  const pw = P.panelWidth;
+  const pw = panelW();
   const gap = P.panelGap;
   const m0 = marginA0 != null ? marginA0 : P.panelMargin;
   const m1 = marginA1 != null ? marginA1 : m0;
@@ -829,25 +940,16 @@ function placePanelsOnSpan(a0, a1, blocked, makePanel, marginA0, marginA1) {
 }
 
 function wallPanelAt(cx, cy, cz, rotY) {
-  const g = new THREE.Group();
-  const pw = P.panelWidth, ph = P.panelHeight, pt = P.panelThickness;
-  // soft fabric body with slight bevel feel (main slab + thin edge frame)
-  const body = box(pw, ph, pt, mats.wallPanel, 0, 0, 0, g);
-  // shallow edge wrap
-  const edge = new THREE.MeshStandardMaterial({
-    color: hex(P.colorWallPanel).multiplyScalar(0.92),
-    roughness: 0.95, metalness: 0
-  });
-  box(pw + 0.02, ph + 0.02, 0.02, edge, 0, 0, -pt / 2 + 0.005, g);
-  g.position.set(cx, cy, cz);
-  g.rotation.y = rotY;
-  world.add(g);
-  return g;
+  // simple rectangular box — no oversized face plate
+  const pw = panelW(), ph = panelH(), pt = P.panelThickness;
+  const m = box(pw, ph, pt, mats.wallPanel, cx, cy, cz);
+  m.rotation.y = rotY;
+  return m;
 }
 
 function placeWallPanels(halfW, halfD, zFront, zBack, wins, bath, doorZ) {
   if (!P.showWallPanels) return;
-  const cy = P.panelBottom + P.panelHeight / 2;
+  const cy = P.panelBottom + panelH() / 2;
   const inset = WT / 2 + P.panelThickness / 2 + 0.02;
   // per-corner clearances (fr = entry-door corner — often no trap)
   const cFL = cornerPanelClearance('fl');
@@ -890,6 +992,7 @@ function placeWallPanels(halfW, halfD, zFront, zBack, wins, bath, doorZ) {
   }
 
   // Window wall (z = -halfD), facing +Z — a: -halfW (FL) → +halfW (FR/door)
+  // No panels between windows and entry door (electrical panel there)
   {
     const blocked = [];
     if (P.showWindows) {
@@ -901,13 +1004,18 @@ function placeWallPanels(halfW, halfD, zFront, zBack, wins, bath, doorZ) {
     if (bath) {
       blocked.push({ a0: bath.x0 - 0.1, a1: bath.x1 + 0.1 });
     }
+    // block entire run from windows to right wall (door + electrical)
+    blocked.push({
+      a0: wins.rightEdge - 0.05,
+      a1: halfW + 1
+    });
     placePanelsOnSpan(-halfW, halfW, blocked, (x) => {
       wallPanelAt(x, cy, -halfD + inset, 0);
     }, cFL, cFR);
   }
 
   // Bathroom EXTERIOR panels only — never inside
-  if (bath && P.panelBottom + P.panelHeight < bath.h - 0.1) {
+  if (bath && P.panelBottom + panelH() < bath.h - 0.1) {
     const bi = WT / 2 + P.panelThickness / 2 + 0.03;
     const doorZc = bath.doorZc != null ? bath.doorZc : bath.cz;
     const doorW = bath.doorW != null ? bath.doorW : Math.min(P.bathDoorWidth, bath.d - 0.8);
@@ -944,38 +1052,31 @@ function placeWallPanels(halfW, halfD, zFront, zBack, wins, bath, doorZ) {
  */
 function placeHorizontalGablePanels(halfW, halfD, cFL, cFR, cBL, cBR, doorZ) {
   const pt = P.panelThickness;
-  // sit just above the vertical panel row; 24" tall (panelWidth), 48" along wall (panelHeight)
-  const cy = P.panelBottom + P.panelHeight + P.panelGap + P.panelWidth / 2;
+  // sit just above the vertical panel row; landscape: long along wall
+  const ph = panelH();
+  const pw = panelW();
+  const cy = P.panelBottom + ph + P.panelGap + pw / 2;
 
   const inset = WT / 2 + pt / 2 + 0.02;
   const lo = -halfW + cBL;
   const hi = halfW - cBR;
-  if (hi - lo < P.panelHeight * 0.5) return; // only skip if wall is impossibly narrow
+  if (hi - lo < ph * 0.5) return;
   const x = (lo + hi) / 2;
 
-  const g = new THREE.Group();
-  const along = P.panelHeight;
-  const vert = P.panelWidth;
-  box(along, vert, pt, mats.wallPanel, 0, 0, 0, g);
-  const edge = new THREE.MeshStandardMaterial({
-    color: hex(P.colorWallPanel).multiplyScalar(0.92), roughness: 0.95, metalness: 0
-  });
-  box(along + 0.02, vert + 0.02, 0.02, edge, 0, 0, -pt / 2 + 0.005, g);
-  g.position.set(x, cy, halfD - inset);
-  g.rotation.y = Math.PI; // back wall faces into room (−Z)
-  world.add(g);
+  const along = ph;
+  const vert = pw;
+  const m = box(along, vert, pt, mats.wallPanel, x, cy, halfD - inset);
+  m.rotation.y = Math.PI;
 }
 
-/** 12×48 bass traps, diagonally in room corners; optional stack of two floor→ceiling */
-function placeBassTraps(halfW, halfD) {
+/** Bass traps: 12|24 × 48, diagonal; optional stack of two floor→ceiling */
+function placeBassTraps(halfW, halfD, bath) {
   if (!P.showBassTraps) return;
-  const tw = P.trapWidth;
-  const th = P.trapHeight;
+  const tw = trapW();
+  const th = 4; // always 48" per unit
   const tt = P.trapThickness;
   const inset = BASS_TRAP_CORNER_INSET;
   const stack = P.twoBassTrapsPerCorner ? 2 : 1;
-  const totalH = th * stack;
-  // floor to ceiling: start at floor (or trapBottom), stack up; clamp to eaves
   const baseY = P.trapBottom;
   const maxTop = P.eavesHeight - 0.05;
   const useH = Math.min(th, (maxTop - baseY) / stack);
@@ -986,6 +1087,17 @@ function placeBassTraps(halfW, halfD) {
     { id: 'bl', x: -halfW + inset, z:  halfD - inset, rot: -Math.PI / 4 },
     { id: 'br', x:  halfW - inset, z:  halfD - inset, rot: Math.PI / 4 },
   ].filter((c) => c.id !== 'fr' || P.showBassTrapDoorCorner);
+
+  // Exterior corner of bathroom into the room (OUTSIDE the bath shell)
+  // Room-side of left face (x0) and room-side of end face (z1)
+  if (P.showBassTrapBathCorner && bath) {
+    corners.push({
+      id: 'bath',
+      x: bath.x0 - inset,
+      z: bath.z1 + inset,
+      rot: Math.PI / 4,
+    });
+  }
 
   for (const c of corners) {
     for (let s = 0; s < stack; s++) {
@@ -1004,6 +1116,81 @@ function placeBassTraps(halfW, halfD) {
       world.add(g);
     }
   }
+}
+
+/**
+ * 8 fabric panels on the vaulted ceiling — 4 per slope in a 2×2 grid.
+ * Equal spacing on all sides of each slope (auto gap, not hand-tuned).
+ */
+function placeVaultPanels(halfW, halfD) {
+  if (!P.showVaultPanels) return;
+  const rise = P.peakHeight - P.eavesHeight;
+  const run = halfW;
+  const slopeLen = Math.hypot(run, rise);
+  if (slopeLen < 0.5) return;
+
+  // landscape: long edge along room (Z), short edge along slope
+  const along = snapPanelSize(P.vaultPanelAlong, [1, 2]);
+  const across = snapPanelSize(P.vaultPanelAcross, [2, 4]);
+  const thick = P.vaultPanelThickness;
+  const edgePad = Math.max(0, P.vaultPanelMargin); // min inset from edges; equal gaps fill the rest
+
+  // usable rectangle per slope
+  const sLo = edgePad;
+  const sHi = slopeLen - edgePad;
+  const zLo = -halfD + edgePad;
+  const zHi = halfD - edgePad;
+  const sSpan = sHi - sLo;
+  const zSpan = zHi - zLo;
+  if (sSpan < along * 2 || zSpan < across * 2) return;
+
+  // equal spacing: 2 panels → 3 equal gaps (before, between, after)
+  const sGap = (sSpan - 2 * along) / 3;
+  const zGap = (zSpan - 2 * across) / 3;
+  const sCenters = [
+    sLo + sGap + along / 2,
+    sLo + sGap + along + sGap + along / 2,
+  ];
+  const zCenters = [
+    zLo + zGap + across / 2,
+    zLo + zGap + across + zGap + across / 2,
+  ];
+
+  function placeOnSlope(side) {
+    const slopeDir = new THREE.Vector3(
+      side < 0 ? run / slopeLen : -run / slopeLen,
+      rise / slopeLen,
+      0
+    );
+    let normal = new THREE.Vector3().crossVectors(slopeDir, new THREE.Vector3(0, 0, 1));
+    if (normal.y > 0) normal.negate();
+    if (side < 0 && normal.x < 0) normal.negate();
+    if (side > 0 && normal.x > 0) normal.negate();
+    normal.normalize();
+
+    const xAxis = slopeDir.clone().normalize();
+    const yAxis = normal.clone().negate();
+    const zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis).normalize();
+    xAxis.crossVectors(yAxis, zAxis).normalize();
+    const quat = new THREE.Quaternion().setFromRotationMatrix(
+      new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis)
+    );
+
+    for (const s of sCenters) {
+      for (const z of zCenters) {
+        const t = s / slopeLen;
+        const x = side < 0 ? -halfW + t * run : halfW - t * run;
+        const y = P.eavesHeight + t * rise;
+        const pos = new THREE.Vector3(x, y, z).addScaledVector(normal, thick / 2 + 0.04);
+
+        const m = box(along, thick, across, mats.vaultPanel, pos.x, pos.y, pos.z);
+        m.quaternion.copy(quat);
+      }
+    }
+  }
+
+  placeOnSlope(-1);
+  placeOnSlope(1);
 }
 
 /**
@@ -1037,16 +1224,13 @@ function placeCeilingClouds(halfW, halfD) {
   const total = n * cw + (n - 1) * gap;
   const startZ = -halfD + margin + (span - total) / 2; // center the pack in the room
 
-  const lip = new THREE.MeshStandardMaterial({
-    color: hex(P.colorCeilingPanel).multiplyScalar(0.9), roughness: 0.95
-  });
   const wireLen = Math.max(0.3, ridgeY - 0.15 - (panelY + ct / 2));
 
   for (let i = 0; i < n; i++) {
     const z = startZ + cw / 2 + i * (cw + gap);
     const g = new THREE.Group();
+    // simple box cloud panel
     box(cd, ct, cw, mats.ceilPanel, 0, 0, 0, g);
-    box(cd + 0.04, 0.03, cw + 0.04, lip, 0, -ct / 2 + 0.01, 0, g);
 
     const corners = [
       [-cd * 0.35, cw * 0.35],
@@ -1145,7 +1329,8 @@ function rebuild() {
     gableFill(zc, halfW); // same plane & material as window wall
   }
 
-  mesh(new THREE.PlaneGeometry(P.roomWidth * 2, 16), mats.night, 0, 6, zFront - 8);
+  // exterior view through windows (garden / pink house photo)
+  placeExteriorBackdrop(zFront, wins);
 
   if (P.showWindows) {
     casementWindow(wins.win1X, zFront);
@@ -1234,12 +1419,13 @@ function rebuild() {
   box(bd, bh, P.roomDepth - WT * 2, mats.trim, -halfW + WT + 0.02, bh / 2, 0);
   box(bd, bh, P.roomDepth - WT * 2, mats.trim,  halfW - WT - 0.02, bh / 2, 0);
 
-  bareBulb(P.bulb1X, P.bulb1Z, halfW);
-  bareBulb(P.bulb2X, P.bulb2Z, halfW);
+  bareBulb(0, P.bulb1Z, halfW);
+  bareBulb(0, P.bulb2Z, halfW);
 
   // ── Acoustic treatment ──────────────────────────────────────────
   placeWallPanels(halfW, halfD, zFront, zBack, wins, bath, doorZ);
-  placeBassTraps(halfW, halfD);
+  placeBassTraps(halfW, halfD, bath);
+  placeVaultPanels(halfW, halfD);
   placeCeilingClouds(halfW, halfD);
 
   // outer colliders
@@ -1539,6 +1725,38 @@ function checkbox(parent, key, label) {
   parent.appendChild(row);
 }
 
+/** Discrete choice — options: [{ value: feet, label: '24"' }, ...] */
+function choice(parent, key, label, options) {
+  const row = document.createElement('div');
+  row.className = 'choice-row';
+  const lab = document.createElement('label');
+  lab.textContent = label;
+  const btns = document.createElement('div');
+  btns.className = 'choice-btns';
+  const refresh = () => {
+    btns.querySelectorAll('button').forEach((b) => {
+      b.classList.toggle('active', Math.abs(parseFloat(b.dataset.v) - P[key]) < 1e-6);
+    });
+  };
+  for (const opt of options) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = opt.label;
+    btn.dataset.v = String(opt.value);
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      P[key] = opt.value;
+      refresh();
+      scheduleRebuild();
+    });
+    btn.addEventListener('mousedown', (e) => e.stopPropagation());
+    btns.appendChild(btn);
+  }
+  refresh();
+  row.append(lab, btns);
+  parent.appendChild(row);
+}
+
 function folder(title, open = true) {
   const f = document.createElement('div');
   f.className = 'folder' + (open ? '' : ' closed');
@@ -1649,32 +1867,58 @@ function buildPanel() {
   slider(b, 'bathDoorAlong', 'Door pos (window wall → into room)', 0.15, 0.85, 0.02, 'frac');
   slider(b, 'bathDoorOpen', 'Door open amount', 0, 1, 0.05, 'frac');
 
-  b = folder('Wall Panels (24×48)');
+  b = folder('Wall Panels');
   checkbox(b, 'showWallPanels', 'Show wall panels');
-  checkbox(b, 'showHorizontalGablePanels', 'Horizontal panel in gable');
+  checkbox(b, 'showHorizontalGablePanels', 'Horizontal panel in gable (back wall)');
   const ph = document.createElement('div');
   ph.className = 'hint-text';
-  ph.textContent = 'Vertical row on walls. Horizontal gable panel only on the back wall (opposite windows). Bathroom exterior only — never inside.';
+  ph.textContent = 'Standard sizes only. Horizontal gable panel on back wall only. Bathroom exterior only — never inside.';
   b.appendChild(ph);
-  slider(b, 'panelWidth', 'Width', 12, 48, 1, 'in');
-  slider(b, 'panelHeight', 'Height', 24, 72, 1, 'in');
+  choice(b, 'panelWidth', 'Width', [
+    { value: 1, label: '12"' },
+    { value: 2, label: '24"' },
+  ]);
+  choice(b, 'panelHeight', 'Height', [
+    { value: 2, label: '24"' },
+    { value: 4, label: '48"' },
+  ]);
   slider(b, 'panelGap', 'Gap between', 1, 24, 0.5, 'in');
   slider(b, 'panelBottom', 'Bottom height', 0, 60, 1, 'in');
   slider(b, 'panelMargin', 'End margin', 1, 24, 0.5, 'in');
   slider(b, 'panelThickness', 'Thickness', 1, 6, 0.25, 'in');
 
-  b = folder('Bass Traps (12×48)');
+  b = folder('Bass Traps');
   checkbox(b, 'showBassTraps', 'Show corner bass traps');
-  checkbox(b, 'twoBassTrapsPerCorner', 'Two bass traps per corner (floor→ceiling)');
+  checkbox(b, 'twoBassTrapsPerCorner', 'Two per corner (floor→ceiling)');
+  checkbox(b, 'showBassTrapBathCorner', 'Trap at bathroom corner');
   checkbox(b, 'showBassTrapDoorCorner', 'Trap at entry-door corner');
   const bth = document.createElement('div');
   bth.className = 'hint-text';
-  bth.textContent = 'Stacked traps run floor toward ceiling. Door-corner trap off by default.';
+  bth.textContent = 'Height is always 48" per unit. Door-corner off by default; bath corner on by default.';
   b.appendChild(bth);
-  slider(b, 'trapWidth', 'Width', 6, 24, 1, 'in');
-  slider(b, 'trapHeight', 'Height each', 24, 96, 1, 'in');
+  choice(b, 'trapWidth', 'Width', [
+    { value: 1, label: '12"' },
+    { value: 2, label: '24"' },
+  ]);
   slider(b, 'trapThickness', 'Depth', 3, 18, 0.5, 'in');
   slider(b, 'trapBottom', 'Bottom height', 0, 36, 1, 'in');
+
+  b = folder('Vault Ceiling Panels');
+  checkbox(b, 'showVaultPanels', 'Show vault panels (8)');
+  const vh = document.createElement('div');
+  vh.className = 'hint-text';
+  vh.textContent = '4 per slope in a 2×2 landscape grid. Gaps auto-equal on all sides.';
+  b.appendChild(vh);
+  choice(b, 'vaultPanelAlong', 'Along slope', [
+    { value: 1, label: '12"' },
+    { value: 2, label: '24"' },
+  ]);
+  choice(b, 'vaultPanelAcross', 'Along room (long)', [
+    { value: 2, label: '24"' },
+    { value: 4, label: '48"' },
+  ]);
+  slider(b, 'vaultPanelMargin', 'Min edge margin', 0, 48, 1, 'in');
+  slider(b, 'vaultPanelThickness', 'Thickness', 1, 6, 0.25, 'in');
 
   b = folder('Ceiling Clouds');
   checkbox(b, 'showClouds', 'Show hanging clouds');
@@ -1694,9 +1938,11 @@ function buildPanel() {
   slider(b, 'windowLightIntensity', 'Window light', 0, 15, 0.25, 'x');
   slider(b, 'ambientIntensity', 'Ambient', 0, 1.5, 0.02, 'x');
   slider(b, 'sunIntensity', 'Sun', 0, 3, 0.05, 'x');
-  slider(b, 'bulb1X', 'Bulb 1 X', -120, 120, 1, 'in');
+  const blh = document.createElement('div');
+  blh.className = 'hint-text';
+  blh.textContent = 'Bulbs sit on the ridge centerline (X = 0). Only Z is adjustable.';
+  b.appendChild(blh);
   slider(b, 'bulb1Z', 'Bulb 1 Z', -120, 120, 1, 'in');
-  slider(b, 'bulb2X', 'Bulb 2 X', -120, 120, 1, 'in');
   slider(b, 'bulb2Z', 'Bulb 2 Z', -120, 120, 1, 'in');
 
   b = folder('Colours');
@@ -1706,6 +1952,7 @@ function buildPanel() {
   colorInput(b, 'colorFrame', 'Frames');
   colorInput(b, 'colorWallPanel', 'Wall panel fabric');
   colorInput(b, 'colorCeilingPanel', 'Ceiling cloud fabric');
+  colorInput(b, 'colorVaultPanel', 'Vault panel fabric (Matchstick)');
   colorInput(b, 'colorBassTrap', 'Bass trap fabric');
 
   b = folder('Player', false);
