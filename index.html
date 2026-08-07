@@ -136,9 +136,11 @@ const DEFAULTS = {
   bathHeight: 7.15,
   bathDoorWidth: 2.5,      // ~30"
   bathDoorHeight: 6.7,     // ~80"
-  bathDoorAlong: 0.42,     // along open-room side wall from window wall
+  // Door on bathroom wall facing the main entry door (x1 = toward windows / right wall)
+  // along: 0 = at window wall, 1 = far end into room
+  bathDoorAlong: 0.45,
   bathWindowGap: 2 / 12,   // 2"
-  bathDoorOpen: 0.9,       // 0=closed … 1≈open into bath
+  bathDoorOpen: 0.85,      // 0=closed … 1≈open into bath
   showBathroom: true,
   showBathDoor: true,
 
@@ -150,15 +152,19 @@ const DEFAULTS = {
   panelGap: 0.35,         // gap between panels
   panelBottom: 1.5,       // bottom edge height from floor
   panelMargin: 0.75,      // inset from wall ends / corners
+  // one horizontal panel in the gable triangle above the vertical row (non-window walls)
+  showHorizontalGablePanels: true,
 
   // Bass traps 12" × 48" diagonal in corners
   showBassTraps: true,
   // front-right corner (window wall + entry-door wall) — door is there
   showBassTrapDoorCorner: false,
+  // stack two 48" traps floor→ceiling
+  twoBassTrapsPerCorner: true,
   trapWidth: 1,           // 12"
   trapHeight: 4,          // 48"
   trapThickness: 0.55,
-  trapBottom: 0.15,
+  trapBottom: 0.0,
 
   // Ceiling clouds
   showClouds: true,
@@ -166,7 +172,8 @@ const DEFAULTS = {
   cloudDepth: 2,          // along X (across ridge)
   cloudThickness: 0.2,
   cloudHang: 1.4,         // drop below ridge underside
-  cloudGap: 2.5,          // spacing between the two clouds along Z
+  cloudGap: 0.5,          // spacing between clouds along Z (0 = edge-to-edge pack)
+  cloudMargin: 0.5,       // inset from front/back walls when packing
   cloudWireLen: 1.2,
 
   bulb1X: -3.2, bulb1Z: -1.2,
@@ -190,7 +197,7 @@ const DEFAULTS = {
 };
 
 const P = { ...DEFAULTS };
-const STORAGE_KEY = 'music-studio-params-v6';
+const STORAGE_KEY = 'music-studio-params-v8';
 const REPO_PARAMS_FILE = 'studio-params.json';
 
 function applyParamObject(obj) {
@@ -686,38 +693,42 @@ function buildSideDoor(zCenter, halfW) {
 }
 
 /**
- * Bathroom door on open-room side wall (x0) — matches photos:
- * opening faces main room; leaf hinged open into the bath.
- * Group local: +X = into bath (from exterior face), Z along wall.
+ * Bathroom door on the wall that FACES THE MAIN ENTRY DOOR (x1 = toward windows / right wall).
+ * You step out of the bath looking toward the entry door side of the room.
+ * bathDoorAlong: 0 = near window wall, 1 = far end into the room (along Z).
+ * Group local: +X = out of bath into room (toward main door), Z along wall.
  */
-function buildBathDoor(bath, doorZc, doorD, doorH) {
+function buildBathDoor(bath, doorZc, doorW, doorH) {
   const g = new THREE.Group();
-  const ft = 0.1;
-  const fd = 0.13;
-  // frame proud of exterior into the main room (-X world)
-  // build in local space then position: local -X = into main room
-  box(fd, ft, doorD + ft * 2, mats.frame, -fd / 2, doorH + ft / 2, 0, g);
-  box(fd, doorH, ft, mats.frame, -fd / 2, doorH / 2, -doorD / 2 - ft / 2, g);
-  box(fd, doorH, ft, mats.frame, -fd / 2, doorH / 2,  doorD / 2 + ft / 2, g);
+  const ft = 0.12;
+  const fd = 0.15;
+  // frame proud of x1 exterior into the room (+X world)
+  // local +X = into room
+  box(fd, ft, doorW + ft * 2, mats.frame, fd / 2, doorH + ft / 2, 0, g);
+  box(fd, doorH, ft, mats.frame, fd / 2, doorH / 2, -doorW / 2 - ft / 2, g);
+  box(fd, doorH, ft, mats.frame, fd / 2, doorH / 2,  doorW / 2 + ft / 2, g);
+  box(0.03, doorH - 0.08, 0.04, mats.frame, 0.04, doorH / 2, -doorW / 2 + 0.02, g);
+  box(0.03, doorH - 0.08, 0.04, mats.frame, 0.04, doorH / 2,  doorW / 2 - 0.02, g);
+  box(0.03, 0.04, doorW - 0.08, mats.frame, 0.04, doorH - 0.06, 0, g);
+
   if (P.showBathDoor) {
     const hinge = new THREE.Group();
-    const leafW = doorD - 0.12;
-    const leafH = doorH - 0.12;
+    const leafW = doorW - 0.14;
+    const leafH = doorH - 0.14;
     const leafT = 0.06;
-    // leaf in hinge space: hinge at z=0 edge, leaf extends +Z
-    box(leafT, leafH, leafW, mats.door, leafT / 2, leafH / 2, leafW / 2, hinge);
+    // hinge at jamb toward window wall (−Z); leaf extends +Z in hinge space
+    box(leafT, leafH, leafW, mats.door, -leafT / 2, leafH / 2, leafW / 2, hinge);
     const pm = new THREE.MeshStandardMaterial({ color: 0xe2ded6, roughness: 0.6 });
-    box(0.025, leafH * 0.32, leafW * 0.42, pm, leafT + 0.015, leafH * 0.32, leafW / 2, hinge);
-    box(0.025, leafH * 0.28, leafW * 0.42, pm, leafT + 0.015, leafH * 0.7, leafW / 2, hinge);
-    // hinge on edge toward window wall (-Z of opening), open into bath (+X)
+    box(0.025, leafH * 0.32, leafW * 0.42, pm, -leafT - 0.01, leafH * 0.32, leafW / 2, hinge);
+    box(0.025, leafH * 0.28, leafW * 0.42, pm, -leafT - 0.01, leafH * 0.7, leafW / 2, hinge);
     const open = THREE.MathUtils.clamp(P.bathDoorOpen, 0, 1) * (Math.PI / 2) * 0.9;
-    hinge.position.set(0.02, 0, -doorD / 2 + 0.06);
-    hinge.rotation.y = open;
+    hinge.position.set(0.02, 0, -doorW / 2 + 0.07);
+    hinge.rotation.y = open; // swing into bath (−X)
     g.add(hinge);
   }
 
-  // exterior face of bath left wall (room side)
-  g.position.set(bath.x0 - 0.01, 0, doorZc);
+  // exterior of bathroom wall toward main door / windows (x1)
+  g.position.set(bath.x1 + 0.015, 0, doorZc);
   world.add(g);
 }
 
@@ -895,54 +906,80 @@ function placeWallPanels(halfW, halfD, zFront, zBack, wins, bath, doorZ) {
     }, cFL, cFR);
   }
 
-  // Bathroom walls — both sides (exterior facing room + interior)
+  // Bathroom EXTERIOR panels only — never inside
   if (bath && P.panelBottom + P.panelHeight < bath.h - 0.1) {
     const bi = WT / 2 + P.panelThickness / 2 + 0.03;
-    const along = THREE.MathUtils.clamp(P.bathDoorAlong, 0.15, 0.85);
-    const doorD = Math.min(P.bathDoorWidth, bath.d - 0.8);
-    const doorZc = bath.z0 + bath.d * along;
-    const doorBlock = [{
-      a0: doorZc - doorD / 2 - 0.12,
-      a1: doorZc + doorD / 2 + 0.12
+    const doorZc = bath.doorZc != null ? bath.doorZc : bath.cz;
+    const doorW = bath.doorW != null ? bath.doorW : Math.min(P.bathDoorWidth, bath.d - 0.8);
+    const doorBlockZ = [{
+      a0: doorZc - doorW / 2 - 0.15,
+      a1: doorZc + doorW / 2 + 0.15
     }];
     const m = Math.min(P.panelMargin, 0.35);
 
-    // --- end wall (z1): exterior (+Z into room) and interior (-Z into bath) ---
+    // end wall z1 (into room) — exterior only, solid
     placePanelsOnSpan(bath.x0, bath.x1, [], (x) => {
-      wallPanelAt(x, cy, bath.z1 + bi, 0); // exterior
-    }, m);
-    placePanelsOnSpan(bath.x0, bath.x1, [], (x) => {
-      wallPanelAt(x, cy, bath.z1 - bi, Math.PI); // interior
+      wallPanelAt(x, cy, bath.z1 + bi, 0);
     }, m);
 
-    // --- open-room side wall (x0): exterior (-X) and interior (+X), skip door ---
-    placePanelsOnSpan(bath.z0, bath.z1, doorBlock, (z) => {
-      wallPanelAt(bath.x0 - bi, cy, z, -Math.PI / 2); // exterior
-    }, m);
-    placePanelsOnSpan(bath.z0, bath.z1, doorBlock, (z) => {
-      wallPanelAt(bath.x0 + bi, cy, z, Math.PI / 2); // interior
+    // left exterior (x0) — exterior only
+    placePanelsOnSpan(bath.z0, bath.z1, [], (z) => {
+      wallPanelAt(bath.x0 - bi, cy, z, -Math.PI / 2);
     }, m);
 
-    // --- window-side partition (x1): exterior (+X toward windows) and interior ---
-    placePanelsOnSpan(bath.z0, bath.z1, [], (z) => {
-      wallPanelAt(bath.x1 + bi, cy, z, Math.PI / 2); // exterior (gap side)
+    // window/main-door side exterior (x1) — skip bathroom door
+    placePanelsOnSpan(bath.z0, bath.z1, doorBlockZ, (z) => {
+      wallPanelAt(bath.x1 + bi, cy, z, Math.PI / 2);
     }, m);
-    placePanelsOnSpan(bath.z0, bath.z1, [], (z) => {
-      wallPanelAt(bath.x1 - bi, cy, z, -Math.PI / 2); // interior
-    }, m);
+  }
+
+  // Horizontal panels in gable triangle above vertical row (non-window walls only)
+  if (P.showHorizontalGablePanels && P.showWallPanels) {
+    placeHorizontalGablePanels(halfW, halfD, cFL, cFR, cBL, cBR, doorZ);
   }
 }
 
-/** 12×48 bass traps, diagonally in room corners */
+/** One horizontal 24×48 panel above the vertical row — BACK WALL ONLY (gable end opposite windows).
+ *  Always rides just above the vertical row; free to sit up in the triangular gable — never culled for height.
+ */
+function placeHorizontalGablePanels(halfW, halfD, cFL, cFR, cBL, cBR, doorZ) {
+  const pt = P.panelThickness;
+  // sit just above the vertical panel row; 24" tall (panelWidth), 48" along wall (panelHeight)
+  const cy = P.panelBottom + P.panelHeight + P.panelGap + P.panelWidth / 2;
+
+  const inset = WT / 2 + pt / 2 + 0.02;
+  const lo = -halfW + cBL;
+  const hi = halfW - cBR;
+  if (hi - lo < P.panelHeight * 0.5) return; // only skip if wall is impossibly narrow
+  const x = (lo + hi) / 2;
+
+  const g = new THREE.Group();
+  const along = P.panelHeight;
+  const vert = P.panelWidth;
+  box(along, vert, pt, mats.wallPanel, 0, 0, 0, g);
+  const edge = new THREE.MeshStandardMaterial({
+    color: hex(P.colorWallPanel).multiplyScalar(0.92), roughness: 0.95, metalness: 0
+  });
+  box(along + 0.02, vert + 0.02, 0.02, edge, 0, 0, -pt / 2 + 0.005, g);
+  g.position.set(x, cy, halfD - inset);
+  g.rotation.y = Math.PI; // back wall faces into room (−Z)
+  world.add(g);
+}
+
+/** 12×48 bass traps, diagonally in room corners; optional stack of two floor→ceiling */
 function placeBassTraps(halfW, halfD) {
   if (!P.showBassTraps) return;
   const tw = P.trapWidth;
   const th = P.trapHeight;
   const tt = P.trapThickness;
-  const by = P.trapBottom + th / 2;
   const inset = BASS_TRAP_CORNER_INSET;
+  const stack = P.twoBassTrapsPerCorner ? 2 : 1;
+  const totalH = th * stack;
+  // floor to ceiling: start at floor (or trapBottom), stack up; clamp to eaves
+  const baseY = P.trapBottom;
+  const maxTop = P.eavesHeight - 0.05;
+  const useH = Math.min(th, (maxTop - baseY) / stack);
 
-  // fr = front-right = window wall + entry-door wall (skip by default)
   const corners = [
     { id: 'fl', x: -halfW + inset, z: -halfD + inset, rot: Math.PI / 4 },
     { id: 'fr', x:  halfW - inset, z: -halfD + inset, rot: -Math.PI / 4 },
@@ -951,45 +988,66 @@ function placeBassTraps(halfW, halfD) {
   ].filter((c) => c.id !== 'fr' || P.showBassTrapDoorCorner);
 
   for (const c of corners) {
-    const g = new THREE.Group();
-    // triangular-ish stack: main slab + two thin wings for bulk
-    box(tw, th, tt, mats.bassTrap, 0, 0, 0, g);
-    box(tw * 0.92, th * 0.98, tt * 0.55, mats.bassTrap, 0, 0, tt * 0.35, g);
-    // edge binding
-    const bind = new THREE.MeshStandardMaterial({
-      color: hex(P.colorBassTrap).multiplyScalar(0.88), roughness: 0.9
-    });
-    box(tw + 0.03, th + 0.03, 0.03, bind, 0, 0, -tt / 2, g);
-    g.position.set(c.x, by, c.z);
-    g.rotation.y = c.rot;
-    world.add(g);
+    for (let s = 0; s < stack; s++) {
+      const g = new THREE.Group();
+      const h = useH;
+      box(tw, h, tt, mats.bassTrap, 0, 0, 0, g);
+      box(tw * 0.92, h * 0.98, tt * 0.55, mats.bassTrap, 0, 0, tt * 0.35, g);
+      const bind = new THREE.MeshStandardMaterial({
+        color: hex(P.colorBassTrap).multiplyScalar(0.88), roughness: 0.9
+      });
+      box(tw + 0.03, h + 0.03, 0.03, bind, 0, 0, -tt / 2, g);
+      const cy = baseY + h / 2 + s * h;
+      if (cy + h / 2 > maxTop + 0.01) break;
+      g.position.set(c.x, cy, c.z);
+      g.rotation.y = c.rot;
+      world.add(g);
+    }
   }
 }
 
-/** Two hanging cloud panels, parallel to ground, centered on ridge (x=0) */
+/**
+ * Ceiling clouds: auto-pack along room depth (Z), centered on ridge (x=0).
+ * Uses cloud size + gap; gap 0 packs edge-to-edge for as many as fit.
+ */
 function placeCeilingClouds(halfW, halfD) {
   if (!P.showClouds) return;
-  const cw = P.cloudWidth;   // along Z
-  const cd = P.cloudDepth;   // along X
+  const cw = P.cloudWidth;   // along Z (length of each cloud)
+  const cd = P.cloudDepth;   // along X (across ridge)
   const ct = P.cloudThickness;
   const ridgeY = P.peakHeight;
   const panelY = ridgeY - P.cloudHang;
-  const gap = P.cloudGap;
-  // two clouds centered on origin along Z
-  const zPositions = [-gap / 2 - cw / 2, gap / 2 + cw / 2];
+  const gap = Math.max(0, P.cloudGap);
+  const margin = Math.max(0, P.cloudMargin ?? 0.5);
 
-  for (const z of zPositions) {
+  // available span along room depth
+  const span = P.roomDepth - margin * 2;
+  if (span < cw * 0.5) return;
+
+  // how many fit: n * cw + (n-1) * gap <= span
+  let n;
+  if (gap <= 1e-6) {
+    n = Math.max(1, Math.floor(span / cw + 1e-9));
+  } else {
+    n = Math.max(1, Math.floor((span + gap) / (cw + gap) + 1e-9));
+  }
+  // don't exceed what actually fits
+  while (n > 1 && n * cw + (n - 1) * gap > span + 1e-6) n--;
+
+  const total = n * cw + (n - 1) * gap;
+  const startZ = -halfD + margin + (span - total) / 2; // center the pack in the room
+
+  const lip = new THREE.MeshStandardMaterial({
+    color: hex(P.colorCeilingPanel).multiplyScalar(0.9), roughness: 0.95
+  });
+  const wireLen = Math.max(0.3, ridgeY - 0.15 - (panelY + ct / 2));
+
+  for (let i = 0; i < n; i++) {
+    const z = startZ + cw / 2 + i * (cw + gap);
     const g = new THREE.Group();
-    // fabric slab
     box(cd, ct, cw, mats.ceilPanel, 0, 0, 0, g);
-    // soft edge lip
-    const lip = new THREE.MeshStandardMaterial({
-      color: hex(P.colorCeilingPanel).multiplyScalar(0.9), roughness: 0.95
-    });
     box(cd + 0.04, 0.03, cw + 0.04, lip, 0, -ct / 2 + 0.01, 0, g);
 
-    // four hanging wires to ceiling
-    const wireLen = Math.max(0.3, ridgeY - 0.15 - (panelY + ct / 2));
     const corners = [
       [-cd * 0.35, cw * 0.35],
       [ cd * 0.35, cw * 0.35],
@@ -1003,11 +1061,10 @@ function placeCeilingClouds(halfW, halfD) {
         wx, ct / 2 + wireLen / 2, wz, g
       );
       wire.castShadow = false;
-      // small canopy at top
       mesh(new THREE.SphereGeometry(0.04, 8, 8), mats.metal, wx, ct / 2 + wireLen, wz, g);
     }
 
-    g.position.set(0, panelY, z); // centered on roof axis x=0
+    g.position.set(0, panelY, z); // ridge axis x=0
     world.add(g);
   }
 }
@@ -1139,30 +1196,35 @@ function rebuild() {
     bath.cx = (bath.x0 + bath.x1) / 2;
     bath.cz = (bath.z0 + bath.z1) / 2;
 
-    const doorD = Math.min(P.bathDoorWidth, bath.d - 0.8);
+    // Door on wall facing MAIN ENTRY (x1 → toward windows / right wall)
+    const doorW = Math.min(P.bathDoorWidth, bath.d - 0.8);
     const doorH = Math.min(P.bathDoorHeight, bath.h - 0.15);
     const along = THREE.MathUtils.clamp(P.bathDoorAlong, 0.15, 0.85);
     const doorZc = THREE.MathUtils.clamp(
       bath.z0 + bath.d * along,
-      bath.z0 + doorD / 2 + 0.25,
-      bath.z1 - doorD / 2 - 0.25
+      bath.z0 + doorW / 2 + 0.25,
+      bath.z1 - doorW / 2 - 0.25
     );
 
     buildShellWalls(bath.x0, bath.x1, bath.z0, bath.z1, bath.h, [
-      { wall: 'x0', a0: doorZc - doorD / 2, a1: doorZc + doorD / 2, y0: 0, y1: doorH }
+      { wall: 'x1', a0: doorZc - doorW / 2, a1: doorZc + doorW / 2, y0: 0, y1: doorH }
     ]);
 
-    // door + frame on open-room side wall (as in photos)
-    buildBathDoor(bath, doorZc, doorD, doorH);
+    buildBathDoor(bath, doorZc, doorW, doorH);
+
+    bath.doorZc = doorZc;
+    bath.doorW = doorW;
+    bath.doorH = doorH;
 
     const bl = new THREE.PointLight(0xfff4e5, 5, 10, 2);
     bl.position.set(bath.cx, bath.h - 0.35, bath.cz);
     world.add(bl);
 
-    addCollider(bath.x0 - 0.1, bath.x0 + WT + 0.15, bath.z0, doorZc - doorD / 2 - 0.1);
-    addCollider(bath.x0 - 0.1, bath.x0 + WT + 0.15, doorZc + doorD / 2 + 0.1, bath.z1);
-    addCollider(bath.x1 - WT - 0.15, bath.x1 + 0.1, bath.z0, bath.z1);
+    // colliders: solid left + end walls; right wall has door gap
+    addCollider(bath.x0 - 0.1, bath.x0 + WT + 0.15, bath.z0, bath.z1);
     addCollider(bath.x0, bath.x1, bath.z1 - WT - 0.1, bath.z1 + 0.15);
+    addCollider(bath.x1 - WT - 0.15, bath.x1 + 0.1, bath.z0, doorZc - doorW / 2 - 0.1);
+    addCollider(bath.x1 - WT - 0.15, bath.x1 + 0.1, doorZc + doorW / 2 + 0.1, bath.z1);
   }
 
   // baseboards (inset, clean miters via shortened sides)
@@ -1580,14 +1642,19 @@ function buildPanel() {
   slider(b, 'bathWindowGap', 'Gap to windows', 0, 12, 1, 'in');
   slider(b, 'bathDoorWidth', 'Doorway width', 24, 48, 1, 'in');
   slider(b, 'bathDoorHeight', 'Doorway height', 60, 96, 1, 'in');
-  slider(b, 'bathDoorAlong', 'Door pos along wall', 0.15, 0.85, 0.02, 'frac');
+  const bdh = document.createElement('div');
+  bdh.className = 'hint-text';
+  bdh.textContent = 'Door is on the bath wall facing the main entry (toward windows). Position slides along that wall.';
+  b.appendChild(bdh);
+  slider(b, 'bathDoorAlong', 'Door pos (window wall → into room)', 0.15, 0.85, 0.02, 'frac');
   slider(b, 'bathDoorOpen', 'Door open amount', 0, 1, 0.05, 'frac');
 
   b = folder('Wall Panels (24×48)');
   checkbox(b, 'showWallPanels', 'Show wall panels');
+  checkbox(b, 'showHorizontalGablePanels', 'Horizontal panel in gable');
   const ph = document.createElement('div');
   ph.className = 'hint-text';
-  ph.textContent = 'Auto-laid on free spans; bathroom walls both sides; skips openings.';
+  ph.textContent = 'Vertical row on walls. Horizontal gable panel only on the back wall (opposite windows). Bathroom exterior only — never inside.';
   b.appendChild(ph);
   slider(b, 'panelWidth', 'Width', 12, 48, 1, 'in');
   slider(b, 'panelHeight', 'Height', 24, 72, 1, 'in');
@@ -1598,13 +1665,14 @@ function buildPanel() {
 
   b = folder('Bass Traps (12×48)');
   checkbox(b, 'showBassTraps', 'Show corner bass traps');
+  checkbox(b, 'twoBassTrapsPerCorner', 'Two bass traps per corner (floor→ceiling)');
   checkbox(b, 'showBassTrapDoorCorner', 'Trap at entry-door corner');
   const bth = document.createElement('div');
   bth.className = 'hint-text';
-  bth.textContent = 'Door-corner trap is off by default (entry door is there).';
+  bth.textContent = 'Stacked traps run floor toward ceiling. Door-corner trap off by default.';
   b.appendChild(bth);
   slider(b, 'trapWidth', 'Width', 6, 24, 1, 'in');
-  slider(b, 'trapHeight', 'Height', 24, 96, 1, 'in');
+  slider(b, 'trapHeight', 'Height each', 24, 96, 1, 'in');
   slider(b, 'trapThickness', 'Depth', 3, 18, 0.5, 'in');
   slider(b, 'trapBottom', 'Bottom height', 0, 36, 1, 'in');
 
@@ -1612,12 +1680,13 @@ function buildPanel() {
   checkbox(b, 'showClouds', 'Show hanging clouds');
   const ch = document.createElement('div');
   ch.className = 'hint-text';
-  ch.textContent = 'Two panels on ridge axis (x=0), hung on wires.';
+  ch.textContent = 'Auto-packs along room depth on the ridge. Gap 0 = edge-to-edge as many as fit.';
   b.appendChild(ch);
   slider(b, 'cloudWidth', 'Length (along room)', 24, 120, 1, 'in');
   slider(b, 'cloudDepth', 'Width (across ridge)', 12, 72, 1, 'in');
   slider(b, 'cloudHang', 'Drop below ridge', 6, 48, 1, 'in');
-  slider(b, 'cloudGap', 'Gap between clouds', 6, 96, 1, 'in');
+  slider(b, 'cloudGap', 'Gap between clouds', 0, 96, 1, 'in');
+  slider(b, 'cloudMargin', 'End margin (walls)', 0, 48, 1, 'in');
   slider(b, 'cloudThickness', 'Thickness', 1, 6, 0.25, 'in');
 
   b = folder('Lighting', false);
