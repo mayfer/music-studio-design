@@ -193,9 +193,10 @@ const DEFAULTS = {
   vaultPanelGap: 0.35,
   vaultPanelMargin: 0.75,
 
-  // bare bulbs hang on ridge centerline (x = 0)
-  bulb1X: 0, bulb1Z: -3.5,
-  bulb2X: 0, bulb2Z: 3.5,
+  // bare bulbs: one centered on each vaulted slope (not on the ridge)
+  // X is auto from vault center; Z is along the room
+  bulb1Z: -2.5,  // left vault
+  bulb2Z: 2.5,   // right vault
   bulbIntensity: 32,
   windowLightIntensity: 5.5,
   ambientIntensity: 0.28,
@@ -216,7 +217,7 @@ const DEFAULTS = {
 };
 
 const P = { ...DEFAULTS };
-const STORAGE_KEY = 'music-studio-params-v10';
+const STORAGE_KEY = 'music-studio-params-v11';
 const REPO_PARAMS_FILE = 'studio-params.json';
 
 function applyParamObject(obj) {
@@ -828,6 +829,10 @@ function buildBathDoor(bath, doorZc, doorW, doorH) {
   world.add(g);
 }
 
+/**
+ * Bare bulb fixture. x is world X on the vault (typically ±halfW/2 = center of each slope).
+ * Hangs just under the sloped ceiling at that X.
+ */
 function bareBulb(x, z, halfW) {
   const g = new THREE.Group();
   box(0.28, 0.07, 0.28, new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.55, metalness: 0.4 }), 0, 0, 0, g);
@@ -845,9 +850,8 @@ function bareBulb(x, z, halfW) {
   mesh(new THREE.SphereGeometry(0.4, 12, 12),
     new THREE.MeshBasicMaterial({ color: 0xffe0a8, transparent: true, opacity: 0.12, depthWrite: false }),
     0, -0.3, 0, g).castShadow = false;
-  // always on ridge centerline (x = 0)
-  const bx = 0;
-  g.position.set(bx, roofY(bx, halfW) - 0.08, z);
+  const bx = THREE.MathUtils.clamp(x, -halfW + 0.4, halfW - 0.4);
+  g.position.set(bx, roofY(bx, halfW) - 0.1, z);
   world.add(g);
   bulbLights.push(light);
 }
@@ -907,6 +911,35 @@ function bassTrapHalfAlongWall() {
 }
 
 /**
+ * Bath × left-wall reentrant corner — IDENTICAL pattern to room corners:
+ * apex at wall planes, center = apex + inset on each axis into the open room.
+ * Open quadrant +X / +Z → rot +45° (same as front-left).
+ */
+function bathCornerTrapPos(halfW, bath) {
+  if (!P.showBassTraps || !P.showBassTrapBathCorner || !bath) return null;
+  const inset = BASS_TRAP_CORNER_INSET;
+  // apex: left wall plane × bathroom outer end plane (room side)
+  const apexX = -halfW;
+  const apexZ = bath.z1;
+  return {
+    x: apexX + inset,
+    z: apexZ + inset,
+    rot: Math.PI / 4,
+  };
+}
+
+/** Same end-clearance used for every corner trap (along a wall from the apex) */
+function trapEndClearance() {
+  if (!P.showBassTraps) return P.panelMargin;
+  return BASS_TRAP_CORNER_INSET + bassTrapHalfAlongWall() + P.panelGap;
+}
+
+/** How far panels must stay from a trap center along a wall */
+function trapPanelClearance() {
+  return bassTrapHalfAlongWall() + P.panelGap;
+}
+
+/**
  * Distance from a room corner along a wall that must stay clear of panels:
  * reaches the far edge of the angled bass trap, then the same gap used between panels.
  * When traps are off (or this corner has no trap), falls back to panelMargin.
@@ -915,8 +948,7 @@ function bassTrapHalfAlongWall() {
 function cornerPanelClearance(corner) {
   if (!P.showBassTraps) return P.panelMargin;
   if (corner === 'fr' && !P.showBassTrapDoorCorner) return P.panelMargin;
-  const trapEnd = BASS_TRAP_CORNER_INSET + bassTrapHalfAlongWall();
-  return trapEnd + P.panelGap;
+  return trapEndClearance();
 }
 
 /** Place 24×48 panels along a 1D span, centered in each free segment.
@@ -962,7 +994,14 @@ function placeWallPanels(halfW, halfD, zFront, zBack, wins, bath, doorZ) {
     const blocked = [];
     if (bath) {
       if (bath.x0 < -halfW + 1.0) {
+        // bathroom runs along left wall — don't put panels behind the bath shell
         blocked.push({ a0: bath.z0, a1: bath.z1 });
+      }
+      // leave gap from bath-corner bass trap (sits just past bath.z1 on this wall)
+      const btp = bathCornerTrapPos(halfW, bath);
+      if (btp) {
+        const tc = trapPanelClearance();
+        blocked.push({ a0: btp.z - tc, a1: btp.z + tc });
       }
     }
     placePanelsOnSpan(-halfD, halfD, blocked, (z) => {
@@ -1014,7 +1053,8 @@ function placeWallPanels(halfW, halfD, zFront, zBack, wins, bath, doorZ) {
     }, cFL, cFR);
   }
 
-  // Bathroom EXTERIOR panels only — never inside
+  // Bathroom EXTERIOR panels only — never inside.
+  // Gap from bath-corner trap uses the SAME clearance as every other corner trap.
   if (bath && P.panelBottom + panelH() < bath.h - 0.1) {
     const bi = WT / 2 + P.panelThickness / 2 + 0.03;
     const doorZc = bath.doorZc != null ? bath.doorZc : bath.cz;
@@ -1024,21 +1064,24 @@ function placeWallPanels(halfW, halfD, zFront, zBack, wins, bath, doorZ) {
       a1: doorZc + doorW / 2 + 0.15
     }];
     const m = Math.min(P.panelMargin, 0.35);
+    const hasBathTrap = !!bathCornerTrapPos(halfW, bath);
+    // identical to cornerPanelClearance used on room walls
+    const trapClear = hasBathTrap ? trapEndClearance() : m;
 
-    // end wall z1 (into room) — exterior only, solid
+    // end wall z1 — trap sits at left end (left wall junction)
     placePanelsOnSpan(bath.x0, bath.x1, [], (x) => {
       wallPanelAt(x, cy, bath.z1 + bi, 0);
-    }, m);
+    }, trapClear, m);
 
-    // left exterior (x0) — exterior only
+    // left exterior x0 — trap sits at room-facing end
     placePanelsOnSpan(bath.z0, bath.z1, [], (z) => {
       wallPanelAt(bath.x0 - bi, cy, z, -Math.PI / 2);
-    }, m);
+    }, m, trapClear);
 
-    // window/main-door side exterior (x1) — skip bathroom door
+    // window/main-door side x1 — skip bathroom door only
     placePanelsOnSpan(bath.z0, bath.z1, doorBlockZ, (z) => {
       wallPanelAt(bath.x1 + bi, cy, z, Math.PI / 2);
-    }, m);
+    }, m, m);
   }
 
   // Horizontal panels in gable triangle above vertical row (non-window walls only)
@@ -1088,18 +1131,31 @@ function placeBassTraps(halfW, halfD, bath) {
     { id: 'br', x:  halfW - inset, z:  halfD - inset, rot: Math.PI / 4 },
   ].filter((c) => c.id !== 'fr' || P.showBassTrapDoorCorner);
 
-  // Exterior corner of bathroom into the room (OUTSIDE the bath shell)
-  // Room-side of left face (x0) and room-side of end face (z1)
-  if (P.showBassTrapBathCorner && bath) {
-    corners.push({
-      id: 'bath',
-      x: bath.x0 - inset,
-      z: bath.z1 + inset,
-      rot: Math.PI / 4,
-    });
-  }
+  // Bathroom × left-wall corner — same apex+inset math as every room corner
+  const btp = bathCornerTrapPos(halfW, bath);
+  if (btp) corners.push({ id: 'bath', x: btp.x, z: btp.z, rot: btp.rot });
+
+  // Never place a trap center inside the bathroom shell
+  const bathInside = bath
+    ? {
+        x0: bath.x0 + 0.02,
+        x1: bath.x1 - 0.02,
+        z0: bath.z0 + 0.02,
+        z1: bath.z1 - 0.02, // strict interior; centers on outer faces OK
+      }
+    : null;
 
   for (const c of corners) {
+    if (
+      bathInside &&
+      c.x > bathInside.x0 &&
+      c.x < bathInside.x1 &&
+      c.z > bathInside.z0 &&
+      c.z < bathInside.z1
+    ) {
+      continue;
+    }
+    // shared mesh path for ALL corners so bath trap matches room traps exactly
     for (let s = 0; s < stack; s++) {
       const g = new THREE.Group();
       const h = useH;
@@ -1419,8 +1475,9 @@ function rebuild() {
   box(bd, bh, P.roomDepth - WT * 2, mats.trim, -halfW + WT + 0.02, bh / 2, 0);
   box(bd, bh, P.roomDepth - WT * 2, mats.trim,  halfW - WT - 0.02, bh / 2, 0);
 
-  bareBulb(0, P.bulb1Z, halfW);
-  bareBulb(0, P.bulb2Z, halfW);
+  // one fixture centered on each vaulted slope (midway eave→ridge), Z along room
+  bareBulb(-halfW * 0.5, P.bulb1Z, halfW); // left vault
+  bareBulb( halfW * 0.5, P.bulb2Z, halfW); // right vault
 
   // ── Acoustic treatment ──────────────────────────────────────────
   placeWallPanels(halfW, halfD, zFront, zBack, wins, bath, doorZ);
@@ -1890,11 +1947,11 @@ function buildPanel() {
   b = folder('Bass Traps');
   checkbox(b, 'showBassTraps', 'Show corner bass traps');
   checkbox(b, 'twoBassTrapsPerCorner', 'Two per corner (floor→ceiling)');
-  checkbox(b, 'showBassTrapBathCorner', 'Trap at bathroom corner');
+  checkbox(b, 'showBassTrapBathCorner', 'Trap at bath × side-wall (main room)');
   checkbox(b, 'showBassTrapDoorCorner', 'Trap at entry-door corner');
   const bth = document.createElement('div');
   bth.className = 'hint-text';
-  bth.textContent = 'Height is always 48" per unit. Door-corner off by default; bath corner on by default.';
+  bth.textContent = 'Bath trap sits in the MAIN ROOM where the bath meets the left wall, past the bath toward the back (never inside the bath).';
   b.appendChild(bth);
   choice(b, 'trapWidth', 'Width', [
     { value: 1, label: '12"' },
@@ -1940,10 +1997,10 @@ function buildPanel() {
   slider(b, 'sunIntensity', 'Sun', 0, 3, 0.05, 'x');
   const blh = document.createElement('div');
   blh.className = 'hint-text';
-  blh.textContent = 'Bulbs sit on the ridge centerline (X = 0). Only Z is adjustable.';
+  blh.textContent = 'One bulb centered on each vault (left / right slope). Z slides along the room.';
   b.appendChild(blh);
-  slider(b, 'bulb1Z', 'Bulb 1 Z', -120, 120, 1, 'in');
-  slider(b, 'bulb2Z', 'Bulb 2 Z', -120, 120, 1, 'in');
+  slider(b, 'bulb1Z', 'Left vault bulb Z', -120, 120, 1, 'in');
+  slider(b, 'bulb2Z', 'Right vault bulb Z', -120, 120, 1, 'in');
 
   b = folder('Colours');
   colorInput(b, 'colorCeiling', 'Ceiling (India Yellow)');
