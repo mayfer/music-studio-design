@@ -134,11 +134,13 @@ const DEFAULTS = {
   bathWidth: 5.5,
   bathDepth: 9,
   bathHeight: 7.15,
-  bathDoorWidth: 2.5,
-  bathDoorHeight: 6.7,
-  bathDoorAlong: 0.4,
-  bathWindowGap: 2 / 12,  // gap between bathroom and left window (default 2")
+  bathDoorWidth: 2.5,      // ~30"
+  bathDoorHeight: 6.7,     // ~80"
+  bathDoorAlong: 0.42,     // along open-room side wall from window wall
+  bathWindowGap: 2 / 12,   // 2"
+  bathDoorOpen: 0.9,       // 0=closed … 1≈open into bath
   showBathroom: true,
+  showBathDoor: true,
 
   // Acoustic panels 24" × 48"
   showWallPanels: true,
@@ -151,6 +153,8 @@ const DEFAULTS = {
 
   // Bass traps 12" × 48" diagonal in corners
   showBassTraps: true,
+  // front-right corner (window wall + entry-door wall) — door is there
+  showBassTrapDoorCorner: false,
   trapWidth: 1,           // 12"
   trapHeight: 4,          // 48"
   trapThickness: 0.55,
@@ -186,17 +190,73 @@ const DEFAULTS = {
 };
 
 const P = { ...DEFAULTS };
-const STORAGE_KEY = 'music-studio-params-v5';
+const STORAGE_KEY = 'music-studio-params-v6';
+const REPO_PARAMS_FILE = 'studio-params.json';
 
-try {
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved) {
-    const parsed = JSON.parse(saved);
-    for (const k of Object.keys(DEFAULTS)) {
-      if (parsed[k] !== undefined) P[k] = parsed[k];
-    }
+function applyParamObject(obj) {
+  if (!obj || typeof obj !== 'object') return;
+  for (const k of Object.keys(DEFAULTS)) {
+    if (obj[k] !== undefined) P[k] = obj[k];
   }
-} catch (_) {}
+}
+
+function paramsForExport() {
+  const out = {};
+  for (const k of Object.keys(DEFAULTS)) out[k] = P[k];
+  return out;
+}
+
+function exportParamsJSON() {
+  return JSON.stringify(paramsForExport(), null, 2) + '\n';
+}
+
+function saveParams() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(paramsForExport()));
+  } catch (_) {}
+}
+
+function loadLocalParams() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) return false;
+    applyParamObject(JSON.parse(saved));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Shared repo defaults — paste Export JSON into studio-params.json and commit */
+async function loadRepoParams() {
+  try {
+    const res = await fetch(REPO_PARAMS_FILE, { cache: 'no-store' });
+    if (!res.ok) return false;
+    const data = await res.json();
+    // empty {} is fine — means “use code defaults”
+    if (data && typeof data === 'object' && Object.keys(data).length > 0) {
+      applyParamObject(data);
+      return true;
+    }
+  } catch (_) {
+    // file:// or missing file — ignore
+  }
+  return false;
+}
+
+function downloadParamsJSON() {
+  const blob = new Blob([exportParamsJSON()], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = REPO_PARAMS_FILE;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// persist even if a control path forgot to save
+addEventListener('pagehide', saveParams);
+addEventListener('beforeunload', saveParams);
 
 // ═══════════════════════════════════════════════════════════════════
 const scene = new THREE.Scene();
@@ -376,13 +436,19 @@ function makeMaterials() {
     }),
     ceil: new THREE.MeshStandardMaterial({ color: hex(P.colorCeiling), roughness: 0.7, metalness: 0.05, side: THREE.DoubleSide }),
     floor: new THREE.MeshStandardMaterial({ color: hex(P.colorFloor), roughness: 0.88 }),
-    frame: new THREE.MeshStandardMaterial({ color: hex(P.colorFrame), roughness: 0.42, metalness: 0.06 }),
+    frame: new THREE.MeshStandardMaterial({
+      color: hex(P.colorFrame), roughness: 0.42, metalness: 0.06,
+      polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2
+    }),
     trim: new THREE.MeshStandardMaterial({ color: 0xf5f2eb, roughness: 0.55, metalness: 0.04 }),
     glass: new THREE.MeshStandardMaterial({
       color: 0x9ec0d4, metalness: 0.15, roughness: 0.08,
       transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false
     }),
-    door: new THREE.MeshStandardMaterial({ color: 0xece9e2, roughness: 0.62 }),
+    door: new THREE.MeshStandardMaterial({
+      color: 0xece9e2, roughness: 0.62,
+      polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
+    }),
     metal: new THREE.MeshStandardMaterial({ color: 0xb8b0a4, metalness: 0.75, roughness: 0.28 }),
     wire: new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.7, roughness: 0.4 }),
     roof: new THREE.MeshStandardMaterial({ color: 0x7a6540, roughness: 0.92, side: THREE.DoubleSide }),
@@ -546,26 +612,36 @@ function addRoofSkin(left, halfW, halfD) {
 
 function casementWindow(cx, zFront) {
   const g = new THREE.Group();
-  const depth = 0.22, ft = 0.09, mull = 0.075;
+  // thicker outer frame + thicker vertical center only (no horizontal mid-bar, no sill)
+  const depth = 0.24;
+  const ft = 0.15;    // outer frame ~1.8"
+  const mull = 0.18;  // center vertical mullion thicker than frame
   const W = P.windowWidth, H = P.windowHeight;
+
+  // outer frame: top, bottom, left, right
   box(W + ft * 2, ft, depth, mats.frame, 0, H + ft / 2, 0, g);
   box(W + ft * 2, ft, depth, mats.frame, 0, -ft / 2, 0, g);
   box(ft, H, depth, mats.frame, -W / 2 - ft / 2, H / 2, 0, g);
   box(ft, H, depth, mats.frame,  W / 2 + ft / 2, H / 2, 0, g);
-  box(mull, H, depth * 0.92, mats.frame, 0, H / 2, 0.01, g);
-  box(W, mull * 0.65, depth * 0.85, mats.frame, 0, H * 0.52, 0.01, g);
-  const paneW = (W - mull) / 2 - 0.03;
+  // vertical center only (two casement leaves)
+  box(mull, H, depth * 0.95, mats.frame, 0, H / 2, 0.01, g);
+
+  const paneW = (W - mull) / 2 - 0.04;
+  const paneH = H - 0.08;
   for (const side of [-1, 1]) {
-    const glass = new THREE.Mesh(new THREE.PlaneGeometry(paneW, H - 0.06), mats.glass);
-    glass.position.set(side * (W / 4 + mull / 4), H / 2, depth * 0.15);
+    const glass = new THREE.Mesh(new THREE.PlaneGeometry(paneW, paneH), mats.glass);
+    glass.position.set(side * (W / 4 + mull / 4), H / 2, depth * 0.12);
     g.add(glass);
-    const lx = side * W / 4, leafW = W / 2 - 0.02, ib = 0.04;
-    box(leafW, ib, depth * 0.6, mats.frame, lx, ib, 0.03, g);
-    box(leafW, ib, depth * 0.6, mats.frame, lx, H - ib, 0.03, g);
-    box(ib, H - 0.02, depth * 0.6, mats.frame, lx - leafW / 2 + ib / 2, H / 2, 0.03, g);
-    box(ib, H - 0.02, depth * 0.6, mats.frame, lx + leafW / 2 - ib / 2, H / 2, 0.03, g);
+    // thin sash border on each leaf (no mid horizontal rail)
+    const lx = side * (W / 4 + mull / 4);
+    const leafW = (W - mull) / 2;
+    const ib = 0.05;
+    box(leafW, ib, depth * 0.55, mats.frame, lx, ib / 2 + 0.02, 0.03, g);
+    box(leafW, ib, depth * 0.55, mats.frame, lx, H - ib / 2 - 0.02, 0.03, g);
+    box(ib, paneH, depth * 0.55, mats.frame, lx - leafW / 2 + ib / 2, H / 2, 0.03, g);
+    box(ib, paneH, depth * 0.55, mats.frame, lx + leafW / 2 - ib / 2, H / 2, 0.03, g);
   }
-  box(W + 0.4, 0.07, 0.38, mats.trim, 0, -0.04, 0.14, g);
+
   g.position.set(cx, P.windowSill, zFront + 0.06);
   world.add(g);
 
@@ -578,20 +654,70 @@ function casementWindow(cx, zFront) {
   world.add(glow);
 }
 
+/** Entry door on right wall — frame sits proud of interior face (no z-fight with wall) */
 function buildSideDoor(zCenter, halfW) {
   const g = new THREE.Group();
   const W = P.doorWidth, H = P.doorHeight;
-  box(0.09, H - 0.08, W - 0.1, mats.door, 0, (H - 0.08) / 2, 0, g);
+  const ft = 0.12;   // jamb width along wall
+  const fd = 0.15;   // frame depth into room
+  // local +X is into the room (away from wall). Group origin on interior wall face.
+  // head
+  box(fd, ft, W + ft * 2, mats.frame, -fd / 2, H + ft / 2, 0, g);
+  // jambs
+  box(fd, H, ft, mats.frame, -fd / 2, H / 2, -W / 2 - ft / 2, g);
+  box(fd, H, ft, mats.frame, -fd / 2, H / 2,  W / 2 + ft / 2, g);
+  // door stop lips (thin, not filling the opening — avoids z-fight + solid block)
+  box(0.03, H - 0.08, 0.04, mats.frame, -0.04, H / 2, -W / 2 + 0.02, g);
+  box(0.03, H - 0.08, 0.04, mats.frame, -0.04, H / 2,  W / 2 - 0.02, g);
+  box(0.03, 0.04, W - 0.08, mats.frame, -0.04, H - 0.06, 0, g);
+  // door slab — offset into room, clear of wall mesh
+  const slabT = 0.07;
+  box(slabT, H - 0.14, W - 0.16, mats.door, -fd / 2 - 0.02, (H - 0.14) / 2, 0, g);
   const pm = new THREE.MeshStandardMaterial({ color: 0xe2ded6, roughness: 0.6 });
-  box(0.04, 2.1, W * 0.36, pm, -0.055, 1.35, 0, g);
-  box(0.04, 1.7, W * 0.36, pm, -0.055, 4.35, 0, g);
-  const ft = 0.11;
-  box(0.2, ft, W + ft * 2, mats.frame, 0, H + ft / 2, 0, g);
-  box(0.2, H, ft, mats.frame, 0, H / 2, -W / 2 - ft / 2, g);
-  box(0.2, H, ft, mats.frame, 0, H / 2,  W / 2 + ft / 2, g);
-  box(0.1, 0.4, 0.06, mats.metal, -0.09, 3.15, -W * 0.3, g);
-  mesh(new THREE.SphereGeometry(0.075, 14, 14), mats.metal, -0.14, 3.35, -W * 0.3, g);
-  g.position.set(halfW - 0.07, 0, zCenter);
+  box(0.03, 2.0, (W - 0.16) * 0.38, pm, -fd / 2 - 0.02 - slabT / 2 - 0.015, 1.3, 0, g);
+  box(0.03, 1.6, (W - 0.16) * 0.38, pm, -fd / 2 - 0.02 - slabT / 2 - 0.015, 4.2, 0, g);
+  // handle
+  box(0.08, 0.35, 0.05, mats.metal, -fd / 2 - 0.08, 3.15, -W * 0.28, g);
+  mesh(new THREE.SphereGeometry(0.07, 12, 12), mats.metal, -fd / 2 - 0.12, 3.3, -W * 0.28, g);
+
+  // interior face of right wall
+  g.position.set(halfW - WT - 0.005, 0, zCenter);
+  world.add(g);
+}
+
+/**
+ * Bathroom door on open-room side wall (x0) — matches photos:
+ * opening faces main room; leaf hinged open into the bath.
+ * Group local: +X = into bath (from exterior face), Z along wall.
+ */
+function buildBathDoor(bath, doorZc, doorD, doorH) {
+  const g = new THREE.Group();
+  const ft = 0.1;
+  const fd = 0.13;
+  // frame proud of exterior into the main room (-X world)
+  // build in local space then position: local -X = into main room
+  box(fd, ft, doorD + ft * 2, mats.frame, -fd / 2, doorH + ft / 2, 0, g);
+  box(fd, doorH, ft, mats.frame, -fd / 2, doorH / 2, -doorD / 2 - ft / 2, g);
+  box(fd, doorH, ft, mats.frame, -fd / 2, doorH / 2,  doorD / 2 + ft / 2, g);
+  if (P.showBathDoor) {
+    const hinge = new THREE.Group();
+    const leafW = doorD - 0.12;
+    const leafH = doorH - 0.12;
+    const leafT = 0.06;
+    // leaf in hinge space: hinge at z=0 edge, leaf extends +Z
+    box(leafT, leafH, leafW, mats.door, leafT / 2, leafH / 2, leafW / 2, hinge);
+    const pm = new THREE.MeshStandardMaterial({ color: 0xe2ded6, roughness: 0.6 });
+    box(0.025, leafH * 0.32, leafW * 0.42, pm, leafT + 0.015, leafH * 0.32, leafW / 2, hinge);
+    box(0.025, leafH * 0.28, leafW * 0.42, pm, leafT + 0.015, leafH * 0.7, leafW / 2, hinge);
+    // hinge on edge toward window wall (-Z of opening), open into bath (+X)
+    const open = THREE.MathUtils.clamp(P.bathDoorOpen, 0, 1) * (Math.PI / 2) * 0.9;
+    hinge.position.set(0.02, 0, -doorD / 2 + 0.06);
+    hinge.rotation.y = open;
+    g.add(hinge);
+  }
+
+  // exterior face of bath left wall (room side)
+  g.position.set(bath.x0 - 0.01, 0, doorZc);
   world.add(g);
 }
 
@@ -661,21 +787,25 @@ function bassTrapHalfAlongWall() {
 /**
  * Distance from a room corner along a wall that must stay clear of panels:
  * reaches the far edge of the angled bass trap, then the same gap used between panels.
- * When traps are off, falls back to panelMargin.
+ * When traps are off (or this corner has no trap), falls back to panelMargin.
+ * corner: 'fl' | 'fr' | 'bl' | 'br'  (fr = door corner)
  */
-function cornerPanelClearance() {
+function cornerPanelClearance(corner) {
   if (!P.showBassTraps) return P.panelMargin;
-  // center is inset from corner; trap extends halfAlong further into the wall span
+  if (corner === 'fr' && !P.showBassTrapDoorCorner) return P.panelMargin;
   const trapEnd = BASS_TRAP_CORNER_INSET + bassTrapHalfAlongWall();
   return trapEnd + P.panelGap;
 }
 
-/** Place 24×48 panels along a 1D span, centered in each free segment */
-function placePanelsOnSpan(a0, a1, blocked, makePanel, endMargin) {
+/** Place 24×48 panels along a 1D span, centered in each free segment.
+ *  marginA0 / marginA1: clearance at span start / end (defaults to panelMargin).
+ */
+function placePanelsOnSpan(a0, a1, blocked, makePanel, marginA0, marginA1) {
   const pw = P.panelWidth;
   const gap = P.panelGap;
-  const margin = endMargin != null ? endMargin : P.panelMargin;
-  const free = freeIntervals(a0 + margin, a1 - margin, blocked);
+  const m0 = marginA0 != null ? marginA0 : P.panelMargin;
+  const m1 = marginA1 != null ? marginA1 : m0;
+  const free = freeIntervals(a0 + m0, a1 - m1, blocked);
   for (const seg of free) {
     const len = seg.a1 - seg.a0;
     if (len < pw) continue;
@@ -708,25 +838,26 @@ function placeWallPanels(halfW, halfD, zFront, zBack, wins, bath, doorZ) {
   if (!P.showWallPanels) return;
   const cy = P.panelBottom + P.panelHeight / 2;
   const inset = WT / 2 + P.panelThickness / 2 + 0.02;
-  // same gap as between panels, measured from where angled bass traps end on the wall
-  const cornerClear = cornerPanelClearance();
+  // per-corner clearances (fr = entry-door corner — often no trap)
+  const cFL = cornerPanelClearance('fl');
+  const cFR = cornerPanelClearance('fr');
+  const cBL = cornerPanelClearance('bl');
+  const cBR = cornerPanelClearance('br');
 
-  // Left wall (x = -halfW), facing +X
+  // Left wall (x = -halfW), facing +X — a: -halfD (front/FL) → +halfD (back/BL)
   {
     const blocked = [];
     if (bath) {
-      // bathroom door on its own wall — left room wall may be free;
-      // if bath touches left wall, block that Z range
       if (bath.x0 < -halfW + 1.0) {
         blocked.push({ a0: bath.z0, a1: bath.z1 });
       }
     }
     placePanelsOnSpan(-halfD, halfD, blocked, (z) => {
       wallPanelAt(-halfW + inset, cy, z, Math.PI / 2);
-    }, cornerClear);
+    }, cFL, cBL);
   }
 
-  // Right wall (x = +halfW), facing -X — block door
+  // Right wall (x = +halfW), facing -X — a: front/FR (door) → back/BR
   {
     const blocked = [];
     if (P.showDoor) {
@@ -737,17 +868,17 @@ function placeWallPanels(halfW, halfD, zFront, zBack, wins, bath, doorZ) {
     }
     placePanelsOnSpan(-halfD, halfD, blocked, (z) => {
       wallPanelAt(halfW - inset, cy, z, -Math.PI / 2);
-    }, cornerClear);
+    }, cFR, cBR);
   }
 
-  // Back wall (z = +halfD), facing -Z
+  // Back wall (z = +halfD), facing -Z — a: -halfW (BL) → +halfW (BR)
   {
     placePanelsOnSpan(-halfW, halfW, [], (x) => {
       wallPanelAt(x, cy, halfD - inset, Math.PI);
-    }, cornerClear);
+    }, cBL, cBR);
   }
 
-  // Window wall (z = -halfD), facing +Z — block windows + bathroom front
+  // Window wall (z = -halfD), facing +Z — a: -halfW (FL) → +halfW (FR/door)
   {
     const blocked = [];
     if (P.showWindows) {
@@ -761,28 +892,44 @@ function placeWallPanels(halfW, halfD, zFront, zBack, wins, bath, doorZ) {
     }
     placePanelsOnSpan(-halfW, halfW, blocked, (x) => {
       wallPanelAt(x, cy, -halfD + inset, 0);
-    }, cornerClear);
+    }, cFL, cFR);
   }
 
-  // Bathroom exterior walls (no room corner traps — use standard panel margin)
-  if (bath) {
-    const bi = WT / 2 + P.panelThickness / 2 + 0.02;
-    placePanelsOnSpan(bath.x0, bath.x1, [], (x) => {
-      if (P.panelBottom + P.panelHeight < bath.h - 0.1) {
-        wallPanelAt(x, cy, bath.z1 + bi, 0);
-      }
-    }, P.panelMargin);
+  // Bathroom walls — both sides (exterior facing room + interior)
+  if (bath && P.panelBottom + P.panelHeight < bath.h - 0.1) {
+    const bi = WT / 2 + P.panelThickness / 2 + 0.03;
     const along = THREE.MathUtils.clamp(P.bathDoorAlong, 0.15, 0.85);
     const doorD = Math.min(P.bathDoorWidth, bath.d - 0.8);
     const doorZc = bath.z0 + bath.d * along;
-    placePanelsOnSpan(bath.z0, bath.z1, [{
-      a0: doorZc - doorD / 2 - 0.1,
-      a1: doorZc + doorD / 2 + 0.1
-    }], (z) => {
-      if (P.panelBottom + P.panelHeight < bath.h - 0.1) {
-        wallPanelAt(bath.x0 - bi, cy, z, -Math.PI / 2);
-      }
-    }, P.panelMargin);
+    const doorBlock = [{
+      a0: doorZc - doorD / 2 - 0.12,
+      a1: doorZc + doorD / 2 + 0.12
+    }];
+    const m = Math.min(P.panelMargin, 0.35);
+
+    // --- end wall (z1): exterior (+Z into room) and interior (-Z into bath) ---
+    placePanelsOnSpan(bath.x0, bath.x1, [], (x) => {
+      wallPanelAt(x, cy, bath.z1 + bi, 0); // exterior
+    }, m);
+    placePanelsOnSpan(bath.x0, bath.x1, [], (x) => {
+      wallPanelAt(x, cy, bath.z1 - bi, Math.PI); // interior
+    }, m);
+
+    // --- open-room side wall (x0): exterior (-X) and interior (+X), skip door ---
+    placePanelsOnSpan(bath.z0, bath.z1, doorBlock, (z) => {
+      wallPanelAt(bath.x0 - bi, cy, z, -Math.PI / 2); // exterior
+    }, m);
+    placePanelsOnSpan(bath.z0, bath.z1, doorBlock, (z) => {
+      wallPanelAt(bath.x0 + bi, cy, z, Math.PI / 2); // interior
+    }, m);
+
+    // --- window-side partition (x1): exterior (+X toward windows) and interior ---
+    placePanelsOnSpan(bath.z0, bath.z1, [], (z) => {
+      wallPanelAt(bath.x1 + bi, cy, z, Math.PI / 2); // exterior (gap side)
+    }, m);
+    placePanelsOnSpan(bath.z0, bath.z1, [], (z) => {
+      wallPanelAt(bath.x1 - bi, cy, z, -Math.PI / 2); // interior
+    }, m);
   }
 }
 
@@ -795,12 +942,13 @@ function placeBassTraps(halfW, halfD) {
   const by = P.trapBottom + th / 2;
   const inset = BASS_TRAP_CORNER_INSET;
 
+  // fr = front-right = window wall + entry-door wall (skip by default)
   const corners = [
-    { x: -halfW + inset, z: -halfD + inset, rot: Math.PI / 4 },
-    { x:  halfW - inset, z: -halfD + inset, rot: -Math.PI / 4 },
-    { x: -halfW + inset, z:  halfD - inset, rot: -Math.PI / 4 },
-    { x:  halfW - inset, z:  halfD - inset, rot: Math.PI / 4 },
-  ];
+    { id: 'fl', x: -halfW + inset, z: -halfD + inset, rot: Math.PI / 4 },
+    { id: 'fr', x:  halfW - inset, z: -halfD + inset, rot: -Math.PI / 4 },
+    { id: 'bl', x: -halfW + inset, z:  halfD - inset, rot: -Math.PI / 4 },
+    { id: 'br', x:  halfW - inset, z:  halfD - inset, rot: Math.PI / 4 },
+  ].filter((c) => c.id !== 'fr' || P.showBassTrapDoorCorner);
 
   for (const c of corners) {
     const g = new THREE.Group();
@@ -1004,11 +1152,8 @@ function rebuild() {
       { wall: 'x0', a0: doorZc - doorD / 2, a1: doorZc + doorD / 2, y0: 0, y1: doorH }
     ]);
 
-    // door frame
-    const fx = bath.x0 + WT / 2;
-    box(0.08, doorH, 0.08, mats.frame, fx, doorH / 2, doorZc - doorD / 2);
-    box(0.08, doorH, 0.08, mats.frame, fx, doorH / 2, doorZc + doorD / 2);
-    box(0.08, 0.08, doorD, mats.frame, fx, doorH, doorZc);
+    // door + frame on open-room side wall (as in photos)
+    buildBathDoor(bath, doorZc, doorD, doorH);
 
     const bl = new THREE.PointLight(0xfff4e5, 5, 10, 2);
     bl.position.set(bath.cx, bath.h - 0.35, bath.cz);
@@ -1231,8 +1376,10 @@ function scheduleRebuild() {
   clearTimeout(rebuildTimer);
   rebuildTimer = setTimeout(() => {
     rebuild();
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(P)); } catch (_) {}
+    saveParams();
   }, 40);
+  // save immediately too so mid-drag values aren't lost if the tab closes
+  saveParams();
 }
 
 function fmt(v, unit = '′') {
@@ -1242,34 +1389,52 @@ function fmt(v, unit = '′') {
   return Number(v).toFixed(2) + unit;
 }
 
-function slider(parent, key, label, min, max, step, unit = '′') {
+/**
+ * unit: 'ft' | 'in' | 'x' | 'frac'
+ * For 'in', min/max/step are in inches; P[key] stays feet.
+ */
+function slider(parent, key, label, min, max, step, unit = 'ft') {
   const row = document.createElement('div');
   row.className = 'row';
   const lab = document.createElement('label');
   lab.textContent = label;
   const val = document.createElement('div');
   val.className = 'value';
-  val.textContent = fmt(P[key], unit);
   const input = document.createElement('input');
   input.type = 'range';
-  input.min = min; input.max = max; input.step = step; input.value = P[key];
+  input.min = min;
+  input.max = max;
+  input.step = step;
+
+  const toDisplay = (feet) => {
+    if (unit === 'in') return (feet * 12).toFixed(1) + '"';
+    if (unit === 'x') return Number(feet).toFixed(2);
+    if (unit === 'frac') return Number(feet).toFixed(2);
+    return fmt(feet, '′');
+  };
+  const fromInput = (raw) => (unit === 'in' ? raw / 12 : raw);
+  const toInput = (feet) => (unit === 'in' ? feet * 12 : feet);
+
+  input.value = toInput(P[key]);
+  val.textContent = toDisplay(P[key]);
+
   input.addEventListener('input', () => {
-    P[key] = parseFloat(input.value);
-    val.textContent = fmt(P[key], unit);
+    P[key] = fromInput(parseFloat(input.value));
+    val.textContent = toDisplay(P[key]);
     if (['bulbIntensity','ambientIntensity','sunIntensity'].includes(key)) {
       updateSceneLights();
       requestRender();
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(P)); } catch (_) {}
+      saveParams();
       return;
     }
     if (key === 'eyeHeight') {
       controls.getObject().position.y = P.eyeHeight;
       requestRender();
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(P)); } catch (_) {}
+      saveParams();
       return;
     }
     if (key === 'walkSpeed' || key === 'sprintSpeed') {
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(P)); } catch (_) {}
+      saveParams();
       return;
     }
     scheduleRebuild();
@@ -1288,7 +1453,10 @@ function colorInput(parent, key, label) {
   const input = document.createElement('input');
   input.type = 'color';
   input.value = P[key];
-  input.addEventListener('input', () => { P[key] = input.value; scheduleRebuild(); });
+  input.addEventListener('input', () => {
+    P[key] = input.value;
+    scheduleRebuild();
+  });
   input.addEventListener('mousedown', (e) => e.stopPropagation());
   row.append(lab, input);
   parent.appendChild(row);
@@ -1300,7 +1468,10 @@ function checkbox(parent, key, label) {
   const input = document.createElement('input');
   input.type = 'checkbox';
   input.checked = !!P[key];
-  input.addEventListener('change', () => { P[key] = input.checked; scheduleRebuild(); });
+  input.addEventListener('change', () => {
+    P[key] = input.checked;
+    scheduleRebuild();
+  });
   input.addEventListener('mousedown', (e) => e.stopPropagation());
   row.append(input, document.createTextNode(label));
   parent.appendChild(row);
@@ -1329,17 +1500,43 @@ function buildPanel() {
   resetBtn.textContent = 'Reset';
   resetBtn.addEventListener('click', () => {
     Object.assign(P, DEFAULTS);
-    buildPanel(); rebuild();
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(P)); } catch (_) {}
+    buildPanel();
+    rebuild();
+    saveParams();
     showToast('Reset to defaults');
   });
   const copyBtn = document.createElement('button');
   copyBtn.textContent = 'Copy JSON';
+  copyBtn.title = `Copy params — paste into ${REPO_PARAMS_FILE} in the repo`;
   copyBtn.addEventListener('click', async () => {
     try {
-      await navigator.clipboard.writeText(JSON.stringify(P, null, 2));
-      showToast('Parameters copied');
+      await navigator.clipboard.writeText(exportParamsJSON());
+      showToast(`Copied — paste into ${REPO_PARAMS_FILE}`);
     } catch { showToast('Copy failed'); }
+  });
+  const exportBtn = document.createElement('button');
+  exportBtn.textContent = 'Export';
+  exportBtn.title = `Download ${REPO_PARAMS_FILE} — put it in the repo root`;
+  exportBtn.addEventListener('click', () => {
+    downloadParamsJSON();
+    showToast(`Downloaded ${REPO_PARAMS_FILE}`);
+  });
+  const loadFileBtn = document.createElement('button');
+  loadFileBtn.textContent = 'Load file';
+  loadFileBtn.title = `Reload ${REPO_PARAMS_FILE} from the repo (overwrites local)`;
+  loadFileBtn.addEventListener('click', async () => {
+    Object.assign(P, DEFAULTS);
+    const ok = await loadRepoParams();
+    if (!ok) {
+      showToast(`No params in ${REPO_PARAMS_FILE}`);
+      buildPanel();
+      rebuild();
+      return;
+    }
+    saveParams();
+    buildPanel();
+    rebuild();
+    showToast(`Loaded ${REPO_PARAMS_FILE}`);
   });
   const collapseBtn = document.createElement('button');
   collapseBtn.textContent = '✕';
@@ -1348,57 +1545,68 @@ function buildPanel() {
     e.stopPropagation();
     setPanelCollapsed(true);
   });
-  actions.append(resetBtn, copyBtn, collapseBtn);
+  actions.append(resetBtn, copyBtn, exportBtn, loadFileBtn, collapseBtn);
   panelEl.appendChild(header);
 
   let b = folder('Room');
-  slider(b, 'roomWidth', 'Width (window wall)', 10, 40, 0.25);
-  slider(b, 'roomDepth', 'Depth', 10, 40, 0.25);
-  slider(b, 'eavesHeight', 'Height at corners', 6, 12, 0.1);
-  slider(b, 'peakHeight', 'Height at ridge', 7, 16, 0.1);
+  const rh = document.createElement('div');
+  rh.className = 'hint-text';
+  rh.textContent = `Room shell in feet; other sizes in inches. Export/Copy JSON → save as ${REPO_PARAMS_FILE} in the repo (others load it automatically). Local tweaks still save to this browser.`;
+  b.appendChild(rh);
+  slider(b, 'roomWidth', 'Width (window wall)', 10, 40, 0.25, 'ft');
+  slider(b, 'roomDepth', 'Depth', 10, 40, 0.25, 'ft');
+  slider(b, 'eavesHeight', 'Height at corners', 6, 12, 0.1, 'ft');
+  slider(b, 'peakHeight', 'Height at ridge', 7, 16, 0.1, 'ft');
 
   b = folder('Windows');
   checkbox(b, 'showWindows', 'Show windows');
-  slider(b, 'windowWidth', 'Width each', 2, 8, 0.05);
-  slider(b, 'windowHeight', 'Height', 2, 7, 0.05);
-  slider(b, 'windowGap', 'Gap between', 0.25, 4, 0.05);
-  slider(b, 'windowSill', 'Sill height', 0.5, 5, 0.05);
+  slider(b, 'windowWidth', 'Width each', 24, 96, 1, 'in');
+  slider(b, 'windowHeight', 'Height', 24, 84, 1, 'in');
+  slider(b, 'windowGap', 'Gap between', 4, 48, 1, 'in');
+  slider(b, 'windowSill', 'Sill height', 6, 60, 1, 'in');
 
   b = folder('Entry Door (right wall)');
   checkbox(b, 'showDoor', 'Show door');
-  slider(b, 'doorWidth', 'Width', 2, 5, 0.05);
-  slider(b, 'doorHeight', 'Height', 5, 9, 0.05);
-  slider(b, 'doorFromFront', 'From window wall', 0.3, 12, 0.05);
+  slider(b, 'doorWidth', 'Width', 24, 48, 1, 'in');
+  slider(b, 'doorHeight', 'Height', 60, 96, 1, 'in');
+  slider(b, 'doorFromFront', 'From window wall', 4, 144, 1, 'in');
 
   b = folder('Bathroom');
   checkbox(b, 'showBathroom', 'Show bathroom');
-  slider(b, 'bathWidth', 'Width (along windows)', 3, 12, 0.1);
-  slider(b, 'bathDepth', 'Depth into room', 3, 14, 0.1);
-  slider(b, 'bathHeight', 'Wall height', 5, 10, 0.05);
-  slider(b, 'bathWindowGap', 'Gap to windows', 0, 1, 1 / 12, '"');
-  slider(b, 'bathDoorWidth', 'Doorway width', 1.5, 5, 0.05);
-  slider(b, 'bathDoorHeight', 'Doorway height', 5, 9, 0.05);
-  slider(b, 'bathDoorAlong', 'Door position along depth', 0.15, 0.85, 0.02, '×');
+  checkbox(b, 'showBathDoor', 'Show door leaf');
+  slider(b, 'bathWidth', 'Width (along windows)', 36, 144, 1, 'in');
+  slider(b, 'bathDepth', 'Depth into room', 36, 168, 1, 'in');
+  slider(b, 'bathHeight', 'Wall height', 60, 120, 1, 'in');
+  slider(b, 'bathWindowGap', 'Gap to windows', 0, 12, 1, 'in');
+  slider(b, 'bathDoorWidth', 'Doorway width', 24, 48, 1, 'in');
+  slider(b, 'bathDoorHeight', 'Doorway height', 60, 96, 1, 'in');
+  slider(b, 'bathDoorAlong', 'Door pos along wall', 0.15, 0.85, 0.02, 'frac');
+  slider(b, 'bathDoorOpen', 'Door open amount', 0, 1, 0.05, 'frac');
 
   b = folder('Wall Panels (24×48)');
   checkbox(b, 'showWallPanels', 'Show wall panels');
   const ph = document.createElement('div');
   ph.className = 'hint-text';
-  ph.textContent = 'Auto-laid along free wall spans; skips windows, doors, bath.';
+  ph.textContent = 'Auto-laid on free spans; bathroom walls both sides; skips openings.';
   b.appendChild(ph);
-  slider(b, 'panelWidth', 'Width', 1, 4, 0.05);
-  slider(b, 'panelHeight', 'Height', 2, 6, 0.05);
-  slider(b, 'panelGap', 'Gap between', 0.05, 2, 0.05);
-  slider(b, 'panelBottom', 'Bottom height', 0, 5, 0.05);
-  slider(b, 'panelMargin', 'End margin', 0.1, 2, 0.05);
-  slider(b, 'panelThickness', 'Thickness', 0.08, 0.4, 0.01);
+  slider(b, 'panelWidth', 'Width', 12, 48, 1, 'in');
+  slider(b, 'panelHeight', 'Height', 24, 72, 1, 'in');
+  slider(b, 'panelGap', 'Gap between', 1, 24, 0.5, 'in');
+  slider(b, 'panelBottom', 'Bottom height', 0, 60, 1, 'in');
+  slider(b, 'panelMargin', 'End margin', 1, 24, 0.5, 'in');
+  slider(b, 'panelThickness', 'Thickness', 1, 6, 0.25, 'in');
 
   b = folder('Bass Traps (12×48)');
   checkbox(b, 'showBassTraps', 'Show corner bass traps');
-  slider(b, 'trapWidth', 'Width', 0.5, 2, 0.05);
-  slider(b, 'trapHeight', 'Height', 2, 8, 0.05);
-  slider(b, 'trapThickness', 'Depth', 0.2, 1.2, 0.05);
-  slider(b, 'trapBottom', 'Bottom height', 0, 3, 0.05);
+  checkbox(b, 'showBassTrapDoorCorner', 'Trap at entry-door corner');
+  const bth = document.createElement('div');
+  bth.className = 'hint-text';
+  bth.textContent = 'Door-corner trap is off by default (entry door is there).';
+  b.appendChild(bth);
+  slider(b, 'trapWidth', 'Width', 6, 24, 1, 'in');
+  slider(b, 'trapHeight', 'Height', 24, 96, 1, 'in');
+  slider(b, 'trapThickness', 'Depth', 3, 18, 0.5, 'in');
+  slider(b, 'trapBottom', 'Bottom height', 0, 36, 1, 'in');
 
   b = folder('Ceiling Clouds');
   checkbox(b, 'showClouds', 'Show hanging clouds');
@@ -1406,21 +1614,21 @@ function buildPanel() {
   ch.className = 'hint-text';
   ch.textContent = 'Two panels on ridge axis (x=0), hung on wires.';
   b.appendChild(ch);
-  slider(b, 'cloudWidth', 'Length (along room)', 2, 10, 0.1);
-  slider(b, 'cloudDepth', 'Width (across ridge)', 1, 6, 0.1);
-  slider(b, 'cloudHang', 'Drop below ridge', 0.4, 4, 0.05);
-  slider(b, 'cloudGap', 'Gap between clouds', 0.5, 8, 0.1);
-  slider(b, 'cloudThickness', 'Thickness', 0.08, 0.5, 0.01);
+  slider(b, 'cloudWidth', 'Length (along room)', 24, 120, 1, 'in');
+  slider(b, 'cloudDepth', 'Width (across ridge)', 12, 72, 1, 'in');
+  slider(b, 'cloudHang', 'Drop below ridge', 6, 48, 1, 'in');
+  slider(b, 'cloudGap', 'Gap between clouds', 6, 96, 1, 'in');
+  slider(b, 'cloudThickness', 'Thickness', 1, 6, 0.25, 'in');
 
   b = folder('Lighting', false);
-  slider(b, 'bulbIntensity', 'Bulb intensity', 5, 60, 0.5, '×');
-  slider(b, 'windowLightIntensity', 'Window light', 0, 15, 0.25, '×');
-  slider(b, 'ambientIntensity', 'Ambient', 0, 1.5, 0.02, '×');
-  slider(b, 'sunIntensity', 'Sun', 0, 3, 0.05, '×');
-  slider(b, 'bulb1X', 'Bulb 1 X', -10, 10, 0.1);
-  slider(b, 'bulb1Z', 'Bulb 1 Z', -10, 10, 0.1);
-  slider(b, 'bulb2X', 'Bulb 2 X', -10, 10, 0.1);
-  slider(b, 'bulb2Z', 'Bulb 2 Z', -10, 10, 0.1);
+  slider(b, 'bulbIntensity', 'Bulb intensity', 5, 60, 0.5, 'x');
+  slider(b, 'windowLightIntensity', 'Window light', 0, 15, 0.25, 'x');
+  slider(b, 'ambientIntensity', 'Ambient', 0, 1.5, 0.02, 'x');
+  slider(b, 'sunIntensity', 'Sun', 0, 3, 0.05, 'x');
+  slider(b, 'bulb1X', 'Bulb 1 X', -120, 120, 1, 'in');
+  slider(b, 'bulb1Z', 'Bulb 1 Z', -120, 120, 1, 'in');
+  slider(b, 'bulb2X', 'Bulb 2 X', -120, 120, 1, 'in');
+  slider(b, 'bulb2Z', 'Bulb 2 Z', -120, 120, 1, 'in');
 
   b = folder('Colours');
   colorInput(b, 'colorCeiling', 'Ceiling (India Yellow)');
@@ -1432,9 +1640,9 @@ function buildPanel() {
   colorInput(b, 'colorBassTrap', 'Bass trap fabric');
 
   b = folder('Player', false);
-  slider(b, 'eyeHeight', 'Eye height', 4, 7, 0.05);
-  slider(b, 'walkSpeed', 'Walk speed', 2, 15, 0.25, '×');
-  slider(b, 'sprintSpeed', 'Sprint speed', 5, 25, 0.25, '×');
+  slider(b, 'eyeHeight', 'Eye height', 48, 84, 1, 'in');
+  slider(b, 'walkSpeed', 'Walk speed', 2, 15, 0.25, 'x');
+  slider(b, 'sprintSpeed', 'Sprint speed', 5, 25, 0.25, 'x');
 
   panelEl.addEventListener('mousedown', (e) => e.stopPropagation());
   panelEl.addEventListener('click', (e) => e.stopPropagation());
@@ -1446,8 +1654,16 @@ toggleBtn.addEventListener('click', (e) => {
   togglePanel();
 });
 
-buildPanel();
-rebuild(); // calls requestRender()
+// Load order: code DEFAULTS → studio-params.json (repo) → localStorage (this browser)
+(async function bootstrap() {
+  const fromRepo = await loadRepoParams();
+  const fromLocal = loadLocalParams();
+  buildPanel();
+  rebuild();
+  if (fromRepo && !fromLocal) {
+    showToast(`Loaded ${REPO_PARAMS_FILE}`);
+  }
+})();
   </script>
 </body>
 </html>
